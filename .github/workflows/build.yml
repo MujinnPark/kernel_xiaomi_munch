@@ -1,0 +1,384 @@
+name: Build Munch Kernel
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+    inputs:
+      KERNEL_SOURCE:
+        description: 'Kernel source (user/repo)'
+        required: true
+        default: 'crdroidandroid/android_kernel_xiaomi_sm8250-munch'
+      KERNEL_BRANCH:
+        description: 'Kernel source branch'
+        required: true
+        default: '14.0'
+      ENABLE_SUSFS:
+        description: 'Enable SUSFS'
+        type: boolean
+        default: true
+      ENABLE_BBR:
+        description: 'Enable BBR TCP congestion'
+        type: boolean
+        default: true
+      KERNEL_NAME:
+        description: 'Kernel name string (shown in uname -r)'
+        required: true
+        default: 'VeilKernel-munch'
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+
+    env:
+      ARCH: arm64
+      SUBARCH: arm64
+      KERNEL_DEFCONFIG: vendor/kona-perf_defconfig
+      # Pinned AOSP Clang r487747c = Clang 17.0.2
+      # Stable for 4.19 SM8250. Change only if you know why.
+      CLANG_VERSION: clang-r487747c
+      TZ: Asia/Kuala_Lumpur
+
+    steps:
+
+      # ──────────────────────────────────────────────────────────────
+      # STEP 1 — Install build dependencies
+      # ──────────────────────────────────────────────────────────────
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            bc bison build-essential ca-certificates curl flex git \
+            libelf-dev libssl-dev lz4 python3 zip zstd cpio \
+            ccache libncurses-dev binutils-aarch64-linux-gnu
+
+      # ──────────────────────────────────────────────────────────────
+      # STEP 2 — Cache toolchain (saves ~400MB re-download per run)
+      # ──────────────────────────────────────────────────────────────
+      - name: Cache AOSP Clang
+        id: cache-clang
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.tool_cache }}/clang
+          key: aosp-${{ env.CLANG_VERSION }}
+
+      - name: Download AOSP Clang (if not cached)
+        if: steps.cache-clang.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ${{ runner.tool_cache }}/clang
+          curl -Lo /tmp/clang.tar.gz \
+            "https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/main/${CLANG_VERSION}.tar.gz"
+          tar -xf /tmp/clang.tar.gz -C ${{ runner.tool_cache }}/clang
+
+      - name: Add Clang to PATH
+        run: echo "${{ runner.tool_cache }}/clang/bin" >> $GITHUB_PATH
+
+      # ──────────────────────────────────────────────────────────────
+      # STEP 3 — Clone kernel source
+      # ──────────────────────────────────────────────────────────────
+      - name: Clone kernel source
+        run: |
+          echo "::group::Cloning ${{ github.event.inputs.KERNEL_SOURCE }}@${{ github.event.inputs.KERNEL_BRANCH }}"
+          git clone --depth=1 \
+            -b "${{ github.event.inputs.KERNEL_BRANCH }}" \
+            "https://github.com/${{ github.event.inputs.KERNEL_SOURCE }}" \
+            kernel
+          echo "::endgroup::"
+
+          # Print kernel version from Makefile
+          echo "=== Kernel Makefile version ==="
+          head -5 kernel/Makefile
+
+          echo "KERNEL_DIR=$GITHUB_WORKSPACE/kernel" >> $GITHUB_ENV
+
+      # ──────────────────────────────────────────────────────────────
+      # STEP 4 — Merge latest AOSP android-4.19-stable (upstream)
+      # ──────────────────────────────────────────────────────────────
+      - name: Merge latest AOSP 4.19-stable
+        working-directory: kernel
+        run: |
+          git config user.email "ci@build.local"
+          git config user.name "CI Build"
+
+          echo "::group::Fetching AOSP android-4.19-stable"
+          git remote add aosp https://android.googlesource.com/kernel/common
+          git fetch aosp android-4.19-stable --depth=1
+          echo "::endgroup::"
+
+          # Merge — if base already tracks this tag, it will be a fast-forward or no-op
+          echo "::group::Merging"
+          git merge aosp/android-4.19-stable \
+            --allow-unrelated-histories \
+            --no-edit \
+            -m "Merge android-4.19-stable into munch kernel" || {
+              echo "::warning::Merge had conflicts — attempting auto-resolve on version-only files"
+              # Auto-resolve Makefile version conflicts (common, safe to take ours)
+              git checkout --ours Makefile 2>/dev/null && git add Makefile || true
+              git merge --continue --no-edit || {
+                echo "::error::Merge failed — manual resolution required"
+                git diff --name-only --diff-filter=U
+                exit 1
+              }
+            }
+          echo "::endgroup::"
+
+          echo "=== Post-merge kernel version ==="
+          head -5 Makefile
+
+      # ──────────────────────────────────────────────────────────────
+      # STEP 5 — KernelSU-Next integration (non-GKI / legacy mode)
+      # ──────────────────────────────────────────────────────────────
+      - name: Integrate KernelSU-Next
+        working-directory: kernel
+        run: |
+          echo "::group::Running KSU-Next setup.sh"
+          curl -LSs \
+            "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" \
+            | bash -s legacy
+          echo "::endgroup::"
+
+          # Verify the drivers/kernelsu directory was created
+          if [ ! -d "drivers/kernelsu" ]; then
+            echo "::error::KernelSU-Next setup failed — drivers/kernelsu not found"
+            exit 1
+          fi
+          echo "KSU-Next version: $(cat drivers/kernelsu/Makefile | grep KSU_VERSION | head -1)"
+
+          # Append KSU config to defconfig
+          DEFCONFIG_PATH="arch/arm64/configs/$(basename ${KERNEL_DEFCONFIG})"
+          cat >> "$DEFCONFIG_PATH" << 'EOF'
+
+          # KernelSU-Next
+          CONFIG_KSU=y
+          CONFIG_KSU_DEBUG=n
+          CONFIG_KPROBES=y
+          CONFIG_HAVE_KPROBES=y
+          CONFIG_KPROBE_EVENTS=y
+          # Uncomment below if kprobes are unreliable on your build:
+          # CONFIG_KSU_MANUAL_HOOK=y
+          EOF
+
+      # ──────────────────────────────────────────────────────────────
+      # STEP 6 — SUSFS integration
+      # ──────────────────────────────────────────────────────────────
+      - name: Integrate SUSFS
+        if: ${{ github.event.inputs.ENABLE_SUSFS == 'true' }}
+        working-directory: kernel
+        run: |
+          # Get latest SUSFS release tag
+          SUSFS_TAG=$(curl -s \
+            https://api.github.com/repos/sidex15/susfs4ksu/releases/latest \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])")
+          echo "SUSFS version: $SUSFS_TAG"
+
+          git clone --depth=1 \
+            -b "${SUSFS_TAG}" \
+            https://github.com/sidex15/susfs4ksu \
+            /tmp/susfs
+
+          echo "::group::Applying SUSFS kernel patch (4.19)"
+          PATCH_FILE="/tmp/susfs/kernel_patches/50_add_susfs_in_kernel-4.19.patch"
+          if [ ! -f "$PATCH_FILE" ]; then
+            echo "::error::No 4.19 patch found. Available patches:"
+            ls /tmp/susfs/kernel_patches/
+            exit 1
+          fi
+
+          patch -p1 --forward < "$PATCH_FILE" && \
+            echo "SUSFS kernel patch applied cleanly" || \
+            echo "::warning::SUSFS patch had rejects — check .rej files before continuing"
+          echo "::endgroup::"
+
+          # Apply KSU-Next companion patch if it exists
+          KSU_PATCH="/tmp/susfs/kernel_patches/next/scope_minimize_patches_for_ksu_next.patch"
+          if [ -f "$KSU_PATCH" ]; then
+            echo "::group::Applying SUSFS KSU-Next companion patch"
+            patch -p1 --forward < "$KSU_PATCH" || \
+              echo "::warning::KSU companion patch had rejects"
+            echo "::endgroup::"
+          fi
+
+          # List any rejected hunks for debugging
+          find . -name "*.rej" -exec echo "REJECT: {}" \; -exec cat {} \;
+
+          # Append SUSFS config
+          DEFCONFIG_PATH="arch/arm64/configs/$(basename ${KERNEL_DEFCONFIG})"
+          cat >> "$DEFCONFIG_PATH" << 'EOF'
+
+          # SUSFS
+          CONFIG_KSU_SUSFS=y
+          CONFIG_KSU_SUSFS_SUS_PATH=y
+          CONFIG_KSU_SUSFS_SUS_MOUNT=y
+          CONFIG_KSU_SUSFS_SUS_KSTAT=y
+          CONFIG_KSU_SUSFS_SUS_OVERLAYFS=n
+          CONFIG_KSU_SUSFS_TRY_UMOUNT=y
+          CONFIG_KSU_SUSFS_SPOOF_UNAME=y
+          CONFIG_KSU_SUSFS_ENABLE_LOG=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
+          CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y
+          EOF
+
+      # ──────────────────────────────────────────────────────────────
+      # STEP 7 — BBR TCP congestion control
+      # ──────────────────────────────────────────────────────────────
+      - name: Enable BBR TCP
+        if: ${{ github.event.inputs.ENABLE_BBR == 'true' }}
+        working-directory: kernel
+        run: |
+          # BBRv1 is in-tree on 4.19 — just enable it
+          # FQ scheduler is required alongside BBR
+          DEFCONFIG_PATH="arch/arm64/configs/$(basename ${KERNEL_DEFCONFIG})"
+          cat >> "$DEFCONFIG_PATH" << 'EOF'
+
+          # BBR TCP congestion control
+          CONFIG_TCP_CONG_BBR=y
+          CONFIG_NET_SCH_FQ=y
+          CONFIG_DEFAULT_TCP_CONG="bbr"
+          EOF
+          echo "BBR config appended"
+
+      # ──────────────────────────────────────────────────────────────
+      # STEP 8 — Build
+      # ──────────────────────────────────────────────────────────────
+      - name: Build kernel
+        working-directory: kernel
+        run: |
+          mkdir -p out
+
+          # Build flags — pure LLVM, no GCC for compilation
+          BUILD_FLAGS=(
+            ARCH=arm64
+            CC=clang
+            CLANG_TRIPLE=aarch64-linux-gnu-
+            CROSS_COMPILE=aarch64-linux-gnu-
+            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
+            LLVM=1
+            LLVM_IAS=1
+            LOCALVERSION="-${{ github.event.inputs.KERNEL_NAME || 'VeilKernel-munch' }}"
+          )
+
+          echo "::group::Generating .config from defconfig"
+          make O=out "${BUILD_FLAGS[@]}" ${KERNEL_DEFCONFIG}
+          echo "::endgroup::"
+
+          # Apply munch-specific fragment if present in source
+          if [ -f arch/arm64/configs/munch.config ]; then
+            echo "Applying munch.config fragment"
+            KCONFIG_ALLCONFIG=arch/arm64/configs/munch.config \
+              make O=out "${BUILD_FLAGS[@]}" olddefconfig
+          else
+            make O=out "${BUILD_FLAGS[@]}" olddefconfig
+          fi
+
+          # Sanity check critical configs before committing to full build
+          echo "=== Config verification ==="
+          for cfg in CONFIG_KSU CONFIG_KPROBES CONFIG_TCP_CONG_BBR; do
+            val=$(grep "^${cfg}" out/.config || echo "NOT SET")
+            echo "  ${cfg}: ${val}"
+          done
+
+          echo "::group::Compiling kernel"
+          time make O=out "${BUILD_FLAGS[@]}" \
+            -j$(nproc --all) \
+            Image.gz-dtb dtbo.img \
+            2>&1 | tee build.log
+          echo "::endgroup::"
+
+          # Hard fail if no output image
+          if [ ! -f out/arch/arm64/boot/Image.gz-dtb ]; then
+            echo "::error::Image.gz-dtb not found — build failed"
+            tail -80 build.log
+            exit 1
+          fi
+
+          echo "=== Build success ==="
+          ls -lh out/arch/arm64/boot/Image.gz-dtb
+          [ -f out/arch/arm64/boot/dtbo.img ] && \
+            ls -lh out/arch/arm64/boot/dtbo.img || \
+            echo "Note: dtbo.img not produced (may not be required)"
+
+      # ──────────────────────────────────────────────────────────────
+      # STEP 9 — Package into AnyKernel3 flashable zip
+      # ──────────────────────────────────────────────────────────────
+      - name: Package AnyKernel3 zip
+        run: |
+          git clone --depth=1 \
+            https://github.com/osm0sis/AnyKernel3 \
+            anykernel
+
+          cp kernel/out/arch/arm64/boot/Image.gz-dtb anykernel/
+          [ -f kernel/out/arch/arm64/boot/dtbo.img ] && \
+            cp kernel/out/arch/arm64/boot/dtbo.img anykernel/ || true
+
+          # Write AK3 config for munch (SM8250 non-GKI, A/B)
+          cat > anykernel/anykernel.sh << 'AKEOF'
+          # AnyKernel3 config — munch (POCO F4 / Redmi K40S)
+          # osm0sis/AnyKernel3
+
+          properties() { '
+          kernel.string=${{ github.event.inputs.KERNEL_NAME || 'VeilKernel-munch' }} by CI
+          do.devicecheck=1
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=munch
+          device.name2=munch
+          supported.versions=12-15
+          supported.patchlevels=
+          '; }
+
+          block=/dev/block/bootdevice/by-name/boot;
+          is_slot_device=1;
+          ramdisk_compression=auto;
+          patch_vbmeta_flag=auto;
+
+          . tools/ak3-core.sh;
+          . split_img "$block";
+          . flash_boot;
+          AKEOF
+
+          # Generate zip name with timestamp and flags
+          ZIPNAME="${{ github.event.inputs.KERNEL_NAME || 'VeilKernel-munch' }}"
+          ZIPNAME="${ZIPNAME}-$(date +%Y%m%d-%H%M)"
+          [ "${{ github.event.inputs.ENABLE_SUSFS }}" = "true" ] && ZIPNAME="${ZIPNAME}-SUSFS"
+          [ "${{ github.event.inputs.ENABLE_BBR }}" = "true" ] && ZIPNAME="${ZIPNAME}-BBR"
+          ZIPNAME="${ZIPNAME}-KSUN.zip"
+
+          cd anykernel
+          zip -r9 "../${ZIPNAME}" . -x '.git*' -x 'README.md'
+          cd ..
+
+          echo "OUTPUT_ZIP=${ZIPNAME}" >> $GITHUB_ENV
+          ls -lh "${ZIPNAME}"
+
+      # ──────────────────────────────────────────────────────────────
+      # STEP 10 — Upload artifacts
+      # ──────────────────────────────────────────────────────────────
+      - name: Upload flashable zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ github.event.inputs.KERNEL_NAME || 'VeilKernel-munch' }}
+          path: "*.zip"
+          retention-days: 7
+
+      - name: Upload build log (always, for debugging)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: kernel/build.log
+          retention-days: 3
+
+      - name: Print final summary
+        if: always()
+        run: |
+          echo "### Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
+          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Source | ${{ github.event.inputs.KERNEL_SOURCE }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Branch | ${{ github.event.inputs.KERNEL_BRANCH }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| SUSFS | ${{ github.event.inputs.ENABLE_SUSFS }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| BBR | ${{ github.event.inputs.ENABLE_BBR }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Output | ${OUTPUT_ZIP:-FAILED} |" >> $GITHUB_STEP_SUMMARY
+          
