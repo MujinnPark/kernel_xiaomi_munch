@@ -34,15 +34,11 @@ jobs:
       ARCH: arm64
       SUBARCH: arm64
       KERNEL_DEFCONFIG: vendor/kona-perf_defconfig
-      # Using zyc-clang 17 — stable for SM8250 4.19, reliably hosted on GitHub
       CLANG_VERSION: '17'
       TZ: Asia/Kuala_Lumpur
 
     steps:
 
-      # ──────────────────────────────────────────────────────────────
-      # STEP 1 — Install build dependencies
-      # ──────────────────────────────────────────────────────────────
       - name: Install dependencies
         run: |
           sudo apt-get update -qq
@@ -52,9 +48,6 @@ jobs:
             ccache libncurses-dev binutils-aarch64-linux-gnu \
             binutils-arm-linux-gnueabi
 
-      # ──────────────────────────────────────────────────────────────
-      # STEP 2 — Cache toolchain
-      # ──────────────────────────────────────────────────────────────
       - name: Cache ZyC Clang
         id: cache-clang
         uses: actions/cache@v4
@@ -66,8 +59,6 @@ jobs:
         if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
           mkdir -p ${{ runner.tool_cache }}/clang
-
-          # Fetch the latest release tag for zyc-clang-17
           TAG=$(curl -s "https://api.github.com/repos/ZyCromerZ/Clang/releases" \
             | python3 -c "
           import sys, json
@@ -78,8 +69,6 @@ jobs:
                   break
           ")
           echo "Using ZyC Clang tag: $TAG"
-
-          # Find the tar.gz asset URL
           ASSET_URL=$(curl -s "https://api.github.com/repos/ZyCromerZ/Clang/releases/tags/${TAG}" \
             | python3 -c "
           import sys, json
@@ -90,96 +79,58 @@ jobs:
                   break
           ")
           echo "Downloading: $ASSET_URL"
-
           curl -Lo /tmp/clang.tar.gz "$ASSET_URL"
           tar -xf /tmp/clang.tar.gz -C ${{ runner.tool_cache }}/clang
-          echo "Clang download and extraction complete."
-          ls ${{ runner.tool_cache }}/clang/bin/clang* | head -5
+          echo "Clang extraction complete."
 
       - name: Add Clang to PATH
         run: echo "${{ runner.tool_cache }}/clang/bin" >> $GITHUB_PATH
 
-      # ──────────────────────────────────────────────────────────────
-      # STEP 3 — Clone kernel source
-      # ──────────────────────────────────────────────────────────────
       - name: Clone kernel source
         run: |
-          echo "::group::Cloning ${{ github.event.inputs.KERNEL_SOURCE }}@${{ github.event.inputs.KERNEL_BRANCH }}"
           git clone --depth=1 \
             -b "${{ github.event.inputs.KERNEL_BRANCH }}" \
             "https://github.com/${{ github.event.inputs.KERNEL_SOURCE }}" \
             kernel
-          echo "::endgroup::"
-
           echo "=== Kernel Makefile version ==="
           head -5 kernel/Makefile
-
           echo "KERNEL_DIR=$GITHUB_WORKSPACE/kernel" >> $GITHUB_ENV
 
-      # ──────────────────────────────────────────────────────────────
-      # STEP 4 — Merge latest AOSP android-4.19-stable (upstream)
-      # ──────────────────────────────────────────────────────────────
       - name: Merge latest AOSP 4.19-stable
         working-directory: kernel
         run: |
           git config user.email "ci@build.local"
           git config user.name "CI Build"
-
-          echo "::group::Fetching AOSP android-4.19-stable"
           git remote add aosp https://android.googlesource.com/kernel/common
           git fetch aosp android-4.19-stable --depth=1
-          echo "::endgroup::"
-
-          echo "::group::Merging"
           git merge aosp/android-4.19-stable \
             --allow-unrelated-histories \
             --no-edit \
             -m "Merge android-4.19-stable into munch kernel" || {
-              echo "::warning::Merge had conflicts — attempting auto-resolve on version-only files"
+              echo "::warning::Merge had conflicts, auto-resolving Makefile"
               git checkout --ours Makefile 2>/dev/null && git add Makefile || true
               git merge --continue --no-edit || {
-                echo "::error::Merge failed — manual resolution required"
+                echo "::error::Merge failed"
                 git diff --name-only --diff-filter=U
                 exit 1
               }
             }
-          echo "::endgroup::"
-
-          echo "=== Post-merge kernel version ==="
           head -5 Makefile
 
-      # ──────────────────────────────────────────────────────────────
-      # STEP 5 — KernelSU-Next integration (non-GKI / legacy mode)
-      # ──────────────────────────────────────────────────────────────
       - name: Integrate KernelSU-Next
         working-directory: kernel
         run: |
-          echo "::group::Running KSU-Next setup.sh"
           curl -LSs \
             "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" \
             | bash -s legacy
-          echo "::endgroup::"
-
           if [ ! -d "drivers/kernelsu" ]; then
-            echo "::error::KernelSU-Next setup failed — drivers/kernelsu not found"
+            echo "::error::KernelSU-Next setup failed"
             exit 1
           fi
-          echo "KSU-Next version: $(cat drivers/kernelsu/Makefile | grep KSU_VERSION | head -1)"
-
+          echo "KSU version: $(grep KSU_VERSION drivers/kernelsu/Makefile | head -1)"
           DEFCONFIG_PATH="arch/arm64/configs/$(basename ${KERNEL_DEFCONFIG})"
-          cat >> "$DEFCONFIG_PATH" << 'EOF'
+          printf '\n# KernelSU-Next\nCONFIG_KSU=y\nCONFIG_KSU_DEBUG=n\nCONFIG_KPROBES=y\nCONFIG_HAVE_KPROBES=y\nCONFIG_KPROBE_EVENTS=y\n' >> "$DEFCONFIG_PATH"
 
-# KernelSU-Next
-CONFIG_KSU=y
-CONFIG_KSU_DEBUG=n
-CONFIG_KPROBES=y
-CONFIG_HAVE_KPROBES=y
-CONFIG_KPROBE_EVENTS=y
-EOF
-
-      # ──────────────────────────────────────────────────────────────
-      # STEP 6 — SUSFS integration
-      # ──────────────────────────────────────────────────────────────
       - name: Integrate SUSFS
         if: ${{ github.event.inputs.ENABLE_SUSFS == 'true' }}
         working-directory: kernel
@@ -188,76 +139,37 @@ EOF
             https://api.github.com/repos/sidex15/susfs4ksu/releases/latest \
             | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])")
           echo "SUSFS version: $SUSFS_TAG"
-
-          git clone --depth=1 \
-            -b "${SUSFS_TAG}" \
-            https://github.com/sidex15/susfs4ksu \
-            /tmp/susfs
-
-          echo "::group::Applying SUSFS kernel patch (4.19)"
+          git clone --depth=1 -b "${SUSFS_TAG}" \
+            https://github.com/sidex15/susfs4ksu /tmp/susfs
           PATCH_FILE="/tmp/susfs/kernel_patches/50_add_susfs_in_kernel-4.19.patch"
           if [ ! -f "$PATCH_FILE" ]; then
-            echo "::error::No 4.19 patch found. Available patches:"
+            echo "::error::No 4.19 patch found"
             ls /tmp/susfs/kernel_patches/
             exit 1
           fi
-
-          patch -p1 --forward < "$PATCH_FILE" && \
-            echo "SUSFS kernel patch applied cleanly" || \
-            echo "::warning::SUSFS patch had rejects — check .rej files before continuing"
-          echo "::endgroup::"
-
+          patch -p1 --forward < "$PATCH_FILE" \
+            && echo "SUSFS patch applied" \
+            || echo "::warning::SUSFS patch had rejects"
           KSU_PATCH="/tmp/susfs/kernel_patches/next/scope_minimize_patches_for_ksu_next.patch"
           if [ -f "$KSU_PATCH" ]; then
-            echo "::group::Applying SUSFS KSU-Next companion patch"
-            patch -p1 --forward < "$KSU_PATCH" || \
-              echo "::warning::KSU companion patch had rejects"
-            echo "::endgroup::"
+            patch -p1 --forward < "$KSU_PATCH" || echo "::warning::KSU companion patch had rejects"
           fi
-
           find . -name "*.rej" -exec echo "REJECT: {}" \; -exec cat {} \;
-
           DEFCONFIG_PATH="arch/arm64/configs/$(basename ${KERNEL_DEFCONFIG})"
-          cat >> "$DEFCONFIG_PATH" << 'EOF'
+          printf '\n# SUSFS\nCONFIG_KSU_SUSFS=y\nCONFIG_KSU_SUSFS_SUS_PATH=y\nCONFIG_KSU_SUSFS_SUS_MOUNT=y\nCONFIG_KSU_SUSFS_SUS_KSTAT=y\nCONFIG_KSU_SUSFS_SUS_OVERLAYFS=n\nCONFIG_KSU_SUSFS_TRY_UMOUNT=y\nCONFIG_KSU_SUSFS_SPOOF_UNAME=y\nCONFIG_KSU_SUSFS_ENABLE_LOG=y\nCONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y\nCONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y\n' >> "$DEFCONFIG_PATH"
 
-# SUSFS
-CONFIG_KSU_SUSFS=y
-CONFIG_KSU_SUSFS_SUS_PATH=y
-CONFIG_KSU_SUSFS_SUS_MOUNT=y
-CONFIG_KSU_SUSFS_SUS_KSTAT=y
-CONFIG_KSU_SUSFS_SUS_OVERLAYFS=n
-CONFIG_KSU_SUSFS_TRY_UMOUNT=y
-CONFIG_KSU_SUSFS_SPOOF_UNAME=y
-CONFIG_KSU_SUSFS_ENABLE_LOG=y
-CONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y
-CONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y
-EOF
-
-      # ──────────────────────────────────────────────────────────────
-      # STEP 7 — BBR TCP congestion control
-      # ──────────────────────────────────────────────────────────────
       - name: Enable BBR TCP
         if: ${{ github.event.inputs.ENABLE_BBR == 'true' }}
         working-directory: kernel
         run: |
           DEFCONFIG_PATH="arch/arm64/configs/$(basename ${KERNEL_DEFCONFIG})"
-          cat >> "$DEFCONFIG_PATH" << 'EOF'
-
-# BBR TCP congestion control
-CONFIG_TCP_CONG_BBR=y
-CONFIG_NET_SCH_FQ=y
-CONFIG_DEFAULT_TCP_CONG="bbr"
-EOF
+          printf '\n# BBR TCP\nCONFIG_TCP_CONG_BBR=y\nCONFIG_NET_SCH_FQ=y\nCONFIG_DEFAULT_TCP_CONG="bbr"\n' >> "$DEFCONFIG_PATH"
           echo "BBR config appended"
 
-      # ──────────────────────────────────────────────────────────────
-      # STEP 8 — Build
-      # ──────────────────────────────────────────────────────────────
       - name: Build kernel
         working-directory: kernel
         run: |
           mkdir -p out
-
           BUILD_FLAGS=(
             ARCH=arm64
             CC=clang
@@ -268,98 +180,69 @@ EOF
             LLVM_IAS=1
             LOCALVERSION="-${{ github.event.inputs.KERNEL_NAME || 'VeilKernel-munch' }}"
           )
-
-          echo "::group::Generating .config from defconfig"
           make O=out "${BUILD_FLAGS[@]}" ${KERNEL_DEFCONFIG}
-          echo "::endgroup::"
-
           if [ -f arch/arm64/configs/munch.config ]; then
-            echo "Applying munch.config fragment"
             KCONFIG_ALLCONFIG=arch/arm64/configs/munch.config \
               make O=out "${BUILD_FLAGS[@]}" olddefconfig
           else
             make O=out "${BUILD_FLAGS[@]}" olddefconfig
           fi
-
-          echo "=== Config verification ==="
+          echo "=== Config check ==="
           for cfg in CONFIG_KSU CONFIG_KPROBES CONFIG_TCP_CONG_BBR CONFIG_KSU_SUSFS; do
-            val=$(grep "^${cfg}" out/.config || echo "NOT SET")
-            echo "  ${cfg}: ${val}"
+            echo "  $(grep "^${cfg}" out/.config || echo "${cfg}: NOT SET")"
           done
-
-          echo "::group::Compiling kernel"
           time make O=out "${BUILD_FLAGS[@]}" \
             -j$(nproc --all) \
             Image.gz-dtb dtbo.img \
             2>&1 | tee build.log
-          echo "::endgroup::"
-
           if [ ! -f out/arch/arm64/boot/Image.gz-dtb ]; then
             echo "::error::Image.gz-dtb not found — build failed"
             tail -80 build.log
             exit 1
           fi
-
-          echo "=== Build success ==="
           ls -lh out/arch/arm64/boot/Image.gz-dtb
-          [ -f out/arch/arm64/boot/dtbo.img ] && \
-            ls -lh out/arch/arm64/boot/dtbo.img || \
-            echo "Note: dtbo.img not produced (may not be required)"
+          [ -f out/arch/arm64/boot/dtbo.img ] && ls -lh out/arch/arm64/boot/dtbo.img || true
 
-      # ──────────────────────────────────────────────────────────────
-      # STEP 9 — Package into AnyKernel3 flashable zip
-      # ──────────────────────────────────────────────────────────────
       - name: Package AnyKernel3 zip
         run: |
-          git clone --depth=1 \
-            https://github.com/osm0sis/AnyKernel3 \
-            anykernel
-
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 anykernel
           cp kernel/out/arch/arm64/boot/Image.gz-dtb anykernel/
-          [ -f kernel/out/arch/arm64/boot/dtbo.img ] && \
-            cp kernel/out/arch/arm64/boot/dtbo.img anykernel/ || true
-
-          cat > anykernel/anykernel.sh << 'AKEOF'
-# AnyKernel3 config — munch (POCO F4 / Redmi K40S)
-properties() { '
-kernel.string=${{ github.event.inputs.KERNEL_NAME || 'VeilKernel-munch' }} by CI
-do.devicecheck=1
-do.modules=0
-do.systemless=1
-do.cleanup=1
-do.cleanuponabort=0
-device.name1=munch
-device.name2=munch
-supported.versions=12-15
-supported.patchlevels=
-'; }
-
-block=/dev/block/bootdevice/by-name/boot;
-is_slot_device=1;
-ramdisk_compression=auto;
-patch_vbmeta_flag=auto;
-
-. tools/ak3-core.sh;
-. split_img "$block";
-. flash_boot;
-AKEOF
-
-          ZIPNAME="${{ github.event.inputs.KERNEL_NAME || 'VeilKernel-munch' }}"
-          ZIPNAME="${ZIPNAME}-$(date +%Y%m%d-%H%M)"
+          [ -f kernel/out/arch/arm64/boot/dtbo.img ] && cp kernel/out/arch/arm64/boot/dtbo.img anykernel/ || true
+          KNAME="${{ github.event.inputs.KERNEL_NAME || 'VeilKernel-munch' }}"
+          {
+            echo "# AnyKernel3 config - munch (POCO F4)"
+            echo "properties() { '"
+            echo "kernel.string=${KNAME} by CI"
+            echo "do.devicecheck=1"
+            echo "do.modules=0"
+            echo "do.systemless=1"
+            echo "do.cleanup=1"
+            echo "do.cleanuponabort=0"
+            echo "device.name1=munch"
+            echo "device.name2=munch"
+            echo "supported.versions=12-15"
+            echo "supported.patchlevels="
+            echo "'; }"
+            echo ""
+            echo "block=/dev/block/bootdevice/by-name/boot;"
+            echo "is_slot_device=1;"
+            echo "ramdisk_compression=auto;"
+            echo "patch_vbmeta_flag=auto;"
+            echo ""
+            echo ". tools/ak3-core.sh;"
+            echo '. split_img "$block";'
+            echo ". flash_boot;"
+          } > anykernel/anykernel.sh
+          ZIPNAME="${KNAME}-$(date +%Y%m%d-%H%M)"
           [ "${{ github.event.inputs.ENABLE_SUSFS }}" = "true" ] && ZIPNAME="${ZIPNAME}-SUSFS"
           [ "${{ github.event.inputs.ENABLE_BBR }}" = "true" ] && ZIPNAME="${ZIPNAME}-BBR"
           ZIPNAME="${ZIPNAME}-KSUN.zip"
-
           cd anykernel
           zip -r9 "../${ZIPNAME}" . -x '.git*' -x 'README.md'
           cd ..
-
           echo "OUTPUT_ZIP=${ZIPNAME}" >> $GITHUB_ENV
           ls -lh "${ZIPNAME}"
 
-      # ──────────────────────────────────────────────────────────────
-      # STEP 10 — Upload artifacts
-      # ──────────────────────────────────────────────────────────────
       - name: Upload flashable zip
         uses: actions/upload-artifact@v4
         with:
@@ -367,7 +250,7 @@ AKEOF
           path: "*.zip"
           retention-days: 7
 
-      - name: Upload build log (always, for debugging)
+      - name: Upload build log
         if: always()
         uses: actions/upload-artifact@v4
         with:
