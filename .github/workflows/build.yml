@@ -1,28 +1,16 @@
-name: Build Munch Kernel
+name: Build PitchKernel
 
 on:
   workflow_dispatch:
     inputs:
-      KERNEL_SOURCE:
-        description: 'Kernel source (user/repo)'
-        required: true
-        default: 'crdroidandroid/android_kernel_xiaomi_sm8250-munch'
       KERNEL_BRANCH:
         description: 'Kernel source branch'
         required: true
-        default: '14.0'
-      ENABLE_SUSFS:
-        description: 'Enable SUSFS'
-        type: boolean
-        default: true
+        default: 'android16-aptusitu-new'
       ENABLE_BBR:
         description: 'Enable BBR TCP congestion'
         type: boolean
         default: true
-      KERNEL_NAME:
-        description: 'Kernel name string (shown in uname -r)'
-        required: true
-        default: 'VeilKernel-munch'
 
 jobs:
   build:
@@ -31,7 +19,9 @@ jobs:
     env:
       ARCH: arm64
       SUBARCH: arm64
-      KERNEL_DEFCONFIG: vendor/kona-perf_defconfig
+      KERNEL_SOURCE: "AstideLabs/android_kernel_xiaomi_sm8250"
+      KERNEL_NAME: "PitchKernel-munch"
+      KERNEL_DEFCONFIG: "vendor/kona-perf_defconfig"
       TZ: Asia/Kuala_Lumpur
       CLANG_LINK_URL: "https://raw.githubusercontent.com/ZyCromerZ/Clang/main/Clang-14-link.txt"
 
@@ -50,13 +40,12 @@ jobs:
         run: |
           CLANG_URL=$(curl -s "$CLANG_LINK_URL" | tr -d '[:space:]')
           if [ -z "$CLANG_URL" ]; then
-            echo "::error::Failed to resolve Clang URL from link file"
+            echo "::error::Failed to resolve Clang URL"
             exit 1
           fi
-          echo "Resolved Clang URL: $CLANG_URL"
+          echo "Clang URL: $CLANG_URL"
           echo "CLANG_URL=$CLANG_URL" >> $GITHUB_ENV
-          CLANG_FILENAME=$(basename "$CLANG_URL" .tar.gz)
-          echo "CLANG_CACHE_KEY=$CLANG_FILENAME" >> $GITHUB_ENV
+          echo "CLANG_CACHE_KEY=$(basename $CLANG_URL .tar.gz)" >> $GITHUB_ENV
 
       - name: Cache ZyC Clang
         id: cache-clang
@@ -69,12 +58,9 @@ jobs:
         if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
           mkdir -p /opt/clang
-          echo "Downloading: $CLANG_URL"
           curl -L --retry 5 --retry-delay 5 --fail -o /tmp/clang.tar.gz "$CLANG_URL"
-          echo "Extracting..."
           tar -xf /tmp/clang.tar.gz -C /opt/clang
           rm /tmp/clang.tar.gz
-          echo "Clang ready:"
           /opt/clang/bin/clang --version
 
       - name: Add Clang to PATH
@@ -84,53 +70,10 @@ jobs:
         run: |
           git clone --depth=1 \
             -b "${{ github.event.inputs.KERNEL_BRANCH }}" \
-            "https://github.com/${{ github.event.inputs.KERNEL_SOURCE }}" \
+            "https://github.com/$KERNEL_SOURCE" \
             kernel
           echo "=== Kernel version ==="
           head -5 kernel/Makefile
-          echo "KERNEL_DIR=$GITHUB_WORKSPACE/kernel" >> $GITHUB_ENV
-
-      - name: Integrate KernelSU-Next
-        working-directory: kernel
-        run: |
-          curl -LSs \
-            "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" \
-            | bash -s legacy
-          if [ ! -d "drivers/kernelsu" ]; then
-            echo "::error::KernelSU-Next setup failed"
-            exit 1
-          fi
-          echo "KSU version: $(grep KSU_VERSION drivers/kernelsu/Makefile | head -1)"
-          DEFCONFIG_PATH="arch/arm64/configs/$(basename $KERNEL_DEFCONFIG)"
-          printf '\n# KernelSU-Next\nCONFIG_KSU=y\nCONFIG_KSU_DEBUG=n\nCONFIG_KPROBES=y\nCONFIG_HAVE_KPROBES=y\nCONFIG_KPROBE_EVENTS=y\n' >> "$DEFCONFIG_PATH"
-
-      - name: Integrate SUSFS
-        if: ${{ github.event.inputs.ENABLE_SUSFS == 'true' }}
-        working-directory: kernel
-        run: |
-          SUSFS_TAG=$(curl -s \
-            https://api.github.com/repos/sidex15/susfs4ksu/releases/latest \
-            | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])")
-          echo "SUSFS tag: $SUSFS_TAG"
-          git clone --depth=1 -b "$SUSFS_TAG" \
-            https://github.com/sidex15/susfs4ksu /tmp/susfs
-          PATCH_FILE="/tmp/susfs/kernel_patches/50_add_susfs_in_kernel-4.19.patch"
-          if [ ! -f "$PATCH_FILE" ]; then
-            echo "::error::4.19 patch not found. Available:"
-            ls /tmp/susfs/kernel_patches/
-            exit 1
-          fi
-          patch -p1 --forward < "$PATCH_FILE" \
-            && echo "SUSFS patch applied" \
-            || echo "::warning::SUSFS patch had rejects"
-          KSU_PATCH="/tmp/susfs/kernel_patches/next/scope_minimize_patches_for_ksu_next.patch"
-          if [ -f "$KSU_PATCH" ]; then
-            patch -p1 --forward < "$KSU_PATCH" \
-              || echo "::warning::KSU companion patch had rejects"
-          fi
-          find . -name "*.rej" -exec echo "REJECT: {}" \; -exec cat {} \;
-          DEFCONFIG_PATH="arch/arm64/configs/$(basename $KERNEL_DEFCONFIG)"
-          printf '\n# SUSFS\nCONFIG_KSU_SUSFS=y\nCONFIG_KSU_SUSFS_SUS_PATH=y\nCONFIG_KSU_SUSFS_SUS_MOUNT=y\nCONFIG_KSU_SUSFS_SUS_KSTAT=y\nCONFIG_KSU_SUSFS_SUS_OVERLAYFS=n\nCONFIG_KSU_SUSFS_TRY_UMOUNT=y\nCONFIG_KSU_SUSFS_SPOOF_UNAME=y\nCONFIG_KSU_SUSFS_ENABLE_LOG=y\nCONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y\nCONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y\n' >> "$DEFCONFIG_PATH"
 
       - name: Enable BBR TCP
         if: ${{ github.event.inputs.ENABLE_BBR == 'true' }}
@@ -152,7 +95,7 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-
             LLVM=1
             LLVM_IAS=1
-            LOCALVERSION="-${{ github.event.inputs.KERNEL_NAME }}"
+            LOCALVERSION="-${KERNEL_NAME}"
           )
           make O=out "${BUILD_FLAGS[@]}" $KERNEL_DEFCONFIG
           if [ -f arch/arm64/configs/munch.config ]; then
@@ -162,7 +105,7 @@ jobs:
             make O=out "${BUILD_FLAGS[@]}" olddefconfig
           fi
           echo "=== Config check ==="
-          for cfg in CONFIG_KSU CONFIG_KPROBES CONFIG_TCP_CONG_BBR CONFIG_KSU_SUSFS; do
+          for cfg in CONFIG_KSU CONFIG_TCP_CONG_BBR CONFIG_KSU_SUSFS; do
             grep "^${cfg}" out/.config && true || echo "${cfg} = NOT SET"
           done
           time make O=out "${BUILD_FLAGS[@]}" \
@@ -171,7 +114,7 @@ jobs:
             2>&1 | tee build.log
           if [ ! -f out/arch/arm64/boot/Image.gz-dtb ]; then
             echo "::error::Build failed — Image.gz-dtb not found"
-            tail -80 build.log
+            tail -100 build.log
             exit 1
           fi
           ls -lh out/arch/arm64/boot/Image.gz-dtb
@@ -179,15 +122,19 @@ jobs:
 
       - name: Package AnyKernel3 zip
         run: |
-          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 anykernel
+          git clone --depth=1 \
+            https://github.com/AstideLabs/AnyKernel3 \
+            anykernel || \
+          git clone --depth=1 \
+            https://github.com/osm0sis/AnyKernel3 \
+            anykernel
           cp kernel/out/arch/arm64/boot/Image.gz-dtb anykernel/
           [ -f kernel/out/arch/arm64/boot/dtbo.img ] && \
             cp kernel/out/arch/arm64/boot/dtbo.img anykernel/ || true
-          KNAME="${{ github.event.inputs.KERNEL_NAME }}"
           {
             echo "# AnyKernel3 config - munch (POCO F4)"
             echo "properties() { '"
-            echo "kernel.string=${KNAME} by CI"
+            echo "kernel.string=${KERNEL_NAME} by CI"
             echo "do.devicecheck=1"
             echo "do.modules=0"
             echo "do.systemless=1"
@@ -195,7 +142,7 @@ jobs:
             echo "do.cleanuponabort=0"
             echo "device.name1=munch"
             echo "device.name2=munch"
-            echo "supported.versions=12-15"
+            echo "supported.versions=12-16"
             echo "supported.patchlevels="
             echo "'; }"
             echo ""
@@ -208,10 +155,9 @@ jobs:
             echo '. split_img "$block";'
             echo ". flash_boot;"
           } > anykernel/anykernel.sh
-          ZIPNAME="${KNAME}-$(date +%Y%m%d-%H%M)"
-          [ "${{ github.event.inputs.ENABLE_SUSFS }}" = "true" ] && ZIPNAME="${ZIPNAME}-SUSFS"
+          ZIPNAME="${KERNEL_NAME}-$(date +%Y%m%d-%H%M)"
           [ "${{ github.event.inputs.ENABLE_BBR }}" = "true" ] && ZIPNAME="${ZIPNAME}-BBR"
-          ZIPNAME="${ZIPNAME}-KSUN.zip"
+          ZIPNAME="${ZIPNAME}.zip"
           cd anykernel
           zip -r9 "../${ZIPNAME}" . -x '.git*' -x 'README.md'
           cd ..
@@ -221,7 +167,7 @@ jobs:
       - name: Upload flashable zip
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.inputs.KERNEL_NAME }}
+          name: ${{ env.KERNEL_NAME }}
           path: "*.zip"
           retention-days: 7
 
@@ -240,9 +186,8 @@ jobs:
           echo "### Build Summary" >> $GITHUB_STEP_SUMMARY
           echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Source | ${{ github.event.inputs.KERNEL_SOURCE }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Source | ${KERNEL_SOURCE} |" >> $GITHUB_STEP_SUMMARY
           echo "| Branch | ${{ github.event.inputs.KERNEL_BRANCH }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| SUSFS | ${{ github.event.inputs.ENABLE_SUSFS }} |" >> $GITHUB_STEP_SUMMARY
           echo "| BBR | ${{ github.event.inputs.ENABLE_BBR }} |" >> $GITHUB_STEP_SUMMARY
           echo "| Output | ${OUTPUT_ZIP:-FAILED} |" >> $GITHUB_STEP_SUMMARY
           
