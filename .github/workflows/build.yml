@@ -21,7 +21,6 @@ jobs:
       SUBARCH: arm64
       KERNEL_SOURCE: "AstideLabs/android_kernel_xiaomi_sm8250"
       KERNEL_NAME: "PitchKernel-munch"
-      KERNEL_DEFCONFIG: "vendor/kona-perf_defconfig"
       TZ: Asia/Kuala_Lumpur
       CLANG_LINK_URL: "https://raw.githubusercontent.com/ZyCromerZ/Clang/main/Clang-14-link.txt"
 
@@ -74,120 +73,218 @@ jobs:
             kernel
           echo "=== Kernel version ==="
           head -5 kernel/Makefile
+          echo "=== Available defconfigs ==="
+          ls kernel/arch/arm64/configs/ | grep -E "munch|kona|lmi|apollo" || true
 
-      - name: Enable BBR TCP
+      - name: Find correct defconfig
+        working-directory: kernel
+        run: |
+          for cfg in vendor/kona-perf_defconfig vendor/lmi_defconfig lmi_defconfig munch_defconfig vendor/munch_defconfig kona-perf_defconfig; do
+            if [ -f "arch/arm64/configs/${cfg}" ]; then
+              echo "Found defconfig: ${cfg}"
+              echo "KERNEL_DEFCONFIG=${cfg}" >> $GITHUB_ENV
+              break
+            fi
+          done
+          if [ -z "$KERNEL_DEFCONFIG" ]; then
+            echo "::error::No defconfig found! Available:"
+            ls arch/arm64/configs/
+            exit 1
+          fi
+
+      - name: Apply BBR TCP config
         if: ${{ github.event.inputs.ENABLE_BBR == 'true' }}
         working-directory: kernel
         run: |
-          DEFCONFIG_PATH="arch/arm64/configs/$(basename $KERNEL_DEFCONFIG)"
+          DEFCONFIG_PATH="arch/arm64/configs/$KERNEL_DEFCONFIG"
           printf '\n# BBR TCP\nCONFIG_TCP_CONG_BBR=y\nCONFIG_NET_SCH_FQ=y\nCONFIG_DEFAULT_TCP_CONG="bbr"\n' >> "$DEFCONFIG_PATH"
-          echo "BBR config appended"
+          echo "BBR appended to $DEFCONFIG_PATH"
 
-      - name: Build kernel
+      - name: Build AOSP Stable
         working-directory: kernel
         run: |
-          mkdir -p out
-          BUILD_FLAGS=(
-            ARCH=arm64
-            CC=clang
-            CLANG_TRIPLE=aarch64-linux-gnu-
-            CROSS_COMPILE=aarch64-linux-gnu-
-            CROSS_COMPILE_ARM32=arm-linux-gnueabi-
-            LLVM=1
-            LLVM_IAS=1
-            LOCALVERSION="-${KERNEL_NAME}"
-          )
-          make O=out "${BUILD_FLAGS[@]}" $KERNEL_DEFCONFIG
-          if [ -f arch/arm64/configs/munch.config ]; then
-            KCONFIG_ALLCONFIG=arch/arm64/configs/munch.config \
-              make O=out "${BUILD_FLAGS[@]}" olddefconfig
-          else
-            make O=out "${BUILD_FLAGS[@]}" olddefconfig
-          fi
-          echo "=== Config check ==="
-          for cfg in CONFIG_KSU CONFIG_TCP_CONG_BBR CONFIG_KSU_SUSFS; do
-            grep "^${cfg}" out/.config && true || echo "${cfg} = NOT SET"
-          done
-          time make O=out "${BUILD_FLAGS[@]}" \
-            -j$(nproc --all) \
-            Image.gz-dtb dtbo.img \
-            2>&1 | tee build.log
-          if [ ! -f out/arch/arm64/boot/Image.gz-dtb ]; then
-            echo "::error::Build failed — Image.gz-dtb not found"
-            tail -100 build.log
-            exit 1
-          fi
-          ls -lh out/arch/arm64/boot/Image.gz-dtb
-          [ -f out/arch/arm64/boot/dtbo.img ] && ls -lh out/arch/arm64/boot/dtbo.img || true
+          mkdir -p out/aosp-stable
+          make O=out/aosp-stable ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 LOCALVERSION="-${KERNEL_NAME}-stable" $KERNEL_DEFCONFIG
+          make O=out/aosp-stable ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 LOCALVERSION="-${KERNEL_NAME}-stable" olddefconfig
+          time make O=out/aosp-stable ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 LOCALVERSION="-${KERNEL_NAME}-stable" -j$(nproc --all) Image dtb.img dtbo.img 2>&1 | tee build-aosp-stable.log
+          [ -f out/aosp-stable/arch/arm64/boot/Image ] || { tail -80 build-aosp-stable.log; exit 1; }
+          ls -lh out/aosp-stable/arch/arm64/boot/Image
 
-      - name: Package AnyKernel3 zip
+      - name: Build AOSP OC
+        working-directory: kernel
         run: |
-          git clone --depth=1 \
-            https://github.com/AstideLabs/AnyKernel3 \
-            anykernel || \
-          git clone --depth=1 \
-            https://github.com/osm0sis/AnyKernel3 \
-            anykernel
-          cp kernel/out/arch/arm64/boot/Image.gz-dtb anykernel/
-          [ -f kernel/out/arch/arm64/boot/dtbo.img ] && \
-            cp kernel/out/arch/arm64/boot/dtbo.img anykernel/ || true
-          {
-            echo "# AnyKernel3 config - munch (POCO F4)"
-            echo "properties() { '"
-            echo "kernel.string=${KERNEL_NAME} by CI"
-            echo "do.devicecheck=1"
-            echo "do.modules=0"
-            echo "do.systemless=1"
-            echo "do.cleanup=1"
-            echo "do.cleanuponabort=0"
-            echo "device.name1=munch"
-            echo "device.name2=munch"
-            echo "supported.versions=12-16"
-            echo "supported.patchlevels="
-            echo "'; }"
-            echo ""
-            echo "block=/dev/block/bootdevice/by-name/boot;"
-            echo "is_slot_device=1;"
-            echo "ramdisk_compression=auto;"
-            echo "patch_vbmeta_flag=auto;"
-            echo ""
-            echo ". tools/ak3-core.sh;"
-            echo '. split_img "$block";'
-            echo ". flash_boot;"
-          } > anykernel/anykernel.sh
-          ZIPNAME="${KERNEL_NAME}-$(date +%Y%m%d-%H%M)"
-          [ "${{ github.event.inputs.ENABLE_BBR }}" = "true" ] && ZIPNAME="${ZIPNAME}-BBR"
-          ZIPNAME="${ZIPNAME}.zip"
-          cd anykernel
-          zip -r9 "../${ZIPNAME}" . -x '.git*' -x 'README.md'
-          cd ..
-          echo "OUTPUT_ZIP=${ZIPNAME}" >> $GITHUB_ENV
-          ls -lh "${ZIPNAME}"
+          mkdir -p out/aosp-oc
+          make O=out/aosp-oc ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 LOCALVERSION="-${KERNEL_NAME}-oc" $KERNEL_DEFCONFIG
+          scripts/config --file out/aosp-oc/.config --set-val CONFIG_CPU_FREQ_MAX_FREQ_LIMIT 3187200 2>/dev/null || true
+          make O=out/aosp-oc ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 LOCALVERSION="-${KERNEL_NAME}-oc" olddefconfig
+          time make O=out/aosp-oc ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 LOCALVERSION="-${KERNEL_NAME}-oc" -j$(nproc --all) Image dtb.img dtbo.img 2>&1 | tee build-aosp-oc.log
+          [ -f out/aosp-oc/arch/arm64/boot/Image ] || { tail -80 build-aosp-oc.log; exit 1; }
+          ls -lh out/aosp-oc/arch/arm64/boot/Image
 
-      - name: Upload flashable zip
+      - name: Build MIUI Stable
+        working-directory: kernel
+        run: |
+          mkdir -p out/miui-stable
+          make O=out/miui-stable ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 LOCALVERSION="-${KERNEL_NAME}-stable" $KERNEL_DEFCONFIG
+          make O=out/miui-stable ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 LOCALVERSION="-${KERNEL_NAME}-stable" olddefconfig
+          time make O=out/miui-stable ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 LOCALVERSION="-${KERNEL_NAME}-stable" -j$(nproc --all) Image dtb.img dtbo.img 2>&1 | tee build-miui-stable.log
+          [ -f out/miui-stable/arch/arm64/boot/Image ] || { tail -80 build-miui-stable.log; exit 1; }
+          ls -lh out/miui-stable/arch/arm64/boot/Image
+
+      - name: Build MIUI OC
+        working-directory: kernel
+        run: |
+          mkdir -p out/miui-oc
+          make O=out/miui-oc ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 LOCALVERSION="-${KERNEL_NAME}-oc" $KERNEL_DEFCONFIG
+          scripts/config --file out/miui-oc/.config --set-val CONFIG_CPU_FREQ_MAX_FREQ_LIMIT 3187200 2>/dev/null || true
+          make O=out/miui-oc ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 LOCALVERSION="-${KERNEL_NAME}-oc" olddefconfig
+          time make O=out/miui-oc ARCH=arm64 CC=clang CLANG_TRIPLE=aarch64-linux-gnu- CROSS_COMPILE=aarch64-linux-gnu- CROSS_COMPILE_ARM32=arm-linux-gnueabi- LLVM=1 LLVM_IAS=1 LOCALVERSION="-${KERNEL_NAME}-oc" -j$(nproc --all) Image dtb.img dtbo.img 2>&1 | tee build-miui-oc.log
+          [ -f out/miui-oc/arch/arm64/boot/Image ] || { tail -80 build-miui-oc.log; exit 1; }
+          ls -lh out/miui-oc/arch/arm64/boot/Image
+
+      - name: Write anykernel scripts
+        run: |
+          python3 - << 'PYEOF'
+          import os
+
+          aosp_sh = """### AnyKernel3 Ramdisk Mod Script
+          ## osm0sis @ xda-developers
+          properties() { '
+          kernel.string=PitchKernel
+          do.devicecheck=0
+          do.modules=0
+          do.systemless=1
+          do.cleanup=1
+          do.cleanuponabort=0
+          device.name1=munch
+          device.name2=munchin
+          device.name3=apollo
+          device.name4=apolloin
+          device.name5=lmi
+          supported.versions=
+          supported.patchlevels=
+          supported.vendorpatchlevels=
+          '; } # end properties
+          BLOCK=boot;
+          IS_SLOT_DEVICE=auto;
+          RAMDISK_COMPRESSION=auto;
+          PATCH_VBMETA_FLAG=auto;
+          NO_BLOCK_DISPLAY=1
+          . tools/ak3-core.sh;
+          os="aosp"
+          ui_print " "
+          ui_print "  -> PitchKernel AOSP Package"
+          ui_print " "
+          select_variant() {
+              ui_print "Select CPU Frequency Variant:"
+              ui_print "  (Vol +) OC 3.187GHz"
+              ui_print "  (Vol -) Stable 2.841GHz"
+              ui_print "  Waiting for key press..."
+              while true; do
+                  key_event=$(getevent -qlc 1)
+                  case "$key_event" in
+                      *"KEY_VOLUMEUP"*"DOWN"*|*"KEY_VOLUMEUP"*"1"*)
+                          variant="oc"; ui_print "  Selected : OC"; break;;
+                      *"KEY_VOLUMEDOWN"*"DOWN"*|*"KEY_VOLUMEDOWN"*"1"*)
+                          variant="stable"; ui_print "  Selected : Stable"; break;;
+                  esac
+                  sleep 0.1
+              done
+          }
+          select_variant
+          if [ -f "$AKHOME/kernels/$os/$variant/Image" ] && [ -f "$AKHOME/kernels/$os/dtb" ] && [ -f "$AKHOME/kernels/$os/dtbo.img" ]; then
+              cp "$AKHOME/kernels/$os/$variant/Image" "$AKHOME/Image"
+              cp "$AKHOME/kernels/$os/dtb" "$AKHOME/dtb"
+              cp "$AKHOME/kernels/$os/dtbo.img" "$AKHOME/dtbo.img"
+          else
+              ui_print "  -> Missing kernel files"; exit 1
+          fi
+          ui_print " "
+          ui_print "  -> Variant: $variant"
+          ui_print "installing BOOT";
+          BLOCK=boot; reset_ak; dump_boot; write_boot;
+          ui_print "installing VENDOR_BOOT";
+          BLOCK=vendor_boot; reset_ak; dump_boot; write_boot;
+          """
+
+          miui_sh = aosp_sh.replace('os="aosp"', 'os="miui"').replace('-> PitchKernel AOSP Package', '-> PitchKernel MIUI/HyperOS Package')
+
+          os.makedirs("ak3_scripts", exist_ok=True)
+          with open("ak3_scripts/aosp_anykernel.sh", "w") as f:
+              f.write(aosp_sh)
+          with open("ak3_scripts/miui_anykernel.sh", "w") as f:
+              f.write(miui_sh)
+          print("Scripts written successfully")
+          PYEOF
+
+      - name: Package AOSP zip
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 ak3-aosp
+          rm -f ak3-aosp/anykernel.sh ak3-aosp/Image* ak3-aosp/dtb* ak3-aosp/zImage 2>/dev/null || true
+          mkdir -p ak3-aosp/kernels/aosp/stable ak3-aosp/kernels/aosp/oc
+          cp kernel/out/aosp-stable/arch/arm64/boot/Image ak3-aosp/kernels/aosp/stable/Image
+          cp kernel/out/aosp-oc/arch/arm64/boot/Image     ak3-aosp/kernels/aosp/oc/Image
+          DTB=$(find kernel/out/aosp-stable/arch/arm64/boot -name "dtb" -o -name "*.dtb" 2>/dev/null | head -1)
+          [ -n "$DTB" ] && cp "$DTB" ak3-aosp/kernels/aosp/dtb || touch ak3-aosp/kernels/aosp/dtb
+          DTBO=$(find kernel/out/aosp-stable/arch/arm64/boot -name "dtbo.img" 2>/dev/null | head -1)
+          [ -n "$DTBO" ] && cp "$DTBO" ak3-aosp/kernels/aosp/dtbo.img || touch ak3-aosp/kernels/aosp/dtbo.img
+          cp ak3_scripts/aosp_anykernel.sh ak3-aosp/anykernel.sh
+          DATE=$(date +%Y%m%d_%H%M%S)
+          AOSP_ZIP="PitchKernel_AOSP_munch_ReSukiSU-SuSFS_${DATE}.zip"
+          cd ak3-aosp && zip -r9 "../${AOSP_ZIP}" . -x '.git*' -x 'README.md' && cd ..
+          echo "AOSP_ZIP=${AOSP_ZIP}" >> $GITHUB_ENV
+          ls -lh "${AOSP_ZIP}"
+
+      - name: Package MIUI zip
+        run: |
+          git clone --depth=1 https://github.com/osm0sis/AnyKernel3 ak3-miui
+          rm -f ak3-miui/anykernel.sh ak3-miui/Image* ak3-miui/dtb* ak3-miui/zImage 2>/dev/null || true
+          mkdir -p ak3-miui/kernels/miui/stable ak3-miui/kernels/miui/oc
+          cp kernel/out/miui-stable/arch/arm64/boot/Image ak3-miui/kernels/miui/stable/Image
+          cp kernel/out/miui-oc/arch/arm64/boot/Image     ak3-miui/kernels/miui/oc/Image
+          DTB=$(find kernel/out/miui-stable/arch/arm64/boot -name "dtb" -o -name "*.dtb" 2>/dev/null | head -1)
+          [ -n "$DTB" ] && cp "$DTB" ak3-miui/kernels/miui/dtb || touch ak3-miui/kernels/miui/dtb
+          DTBO=$(find kernel/out/miui-stable/arch/arm64/boot -name "dtbo.img" 2>/dev/null | head -1)
+          [ -n "$DTBO" ] && cp "$DTBO" ak3-miui/kernels/miui/dtbo.img || touch ak3-miui/kernels/miui/dtbo.img
+          cp ak3_scripts/miui_anykernel.sh ak3-miui/anykernel.sh
+          DATE=$(date +%Y%m%d_%H%M%S)
+          MIUI_ZIP="PitchKernel_MIUI_munch_ReSukiSU-SuSFS_${DATE}.zip"
+          cd ak3-miui && zip -r9 "../${MIUI_ZIP}" . -x '.git*' -x 'README.md' && cd ..
+          echo "MIUI_ZIP=${MIUI_ZIP}" >> $GITHUB_ENV
+          ls -lh "${MIUI_ZIP}"
+
+      - name: Upload AOSP zip
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.KERNEL_NAME }}
-          path: "*.zip"
+          name: PitchKernel-AOSP
+          path: "PitchKernel_AOSP_*.zip"
           retention-days: 7
 
-      - name: Upload build log
+      - name: Upload MIUI zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: PitchKernel-MIUI
+          path: "PitchKernel_MIUI_*.zip"
+          retention-days: 7
+
+      - name: Upload build logs
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: build-log
-          path: kernel/build.log
+          name: build-logs
+          path: "kernel/build-*.log"
           if-no-files-found: warn
           retention-days: 3
 
       - name: Print final summary
         if: always()
         run: |
-          echo "### Build Summary" >> $GITHUB_STEP_SUMMARY
+          echo "### PitchKernel Build Summary" >> $GITHUB_STEP_SUMMARY
           echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
           echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
           echo "| Source | ${KERNEL_SOURCE} |" >> $GITHUB_STEP_SUMMARY
           echo "| Branch | ${{ github.event.inputs.KERNEL_BRANCH }} |" >> $GITHUB_STEP_SUMMARY
           echo "| BBR | ${{ github.event.inputs.ENABLE_BBR }} |" >> $GITHUB_STEP_SUMMARY
-          echo "| Output | ${OUTPUT_ZIP:-FAILED} |" >> $GITHUB_STEP_SUMMARY
+          echo "| AOSP zip | ${AOSP_ZIP:-FAILED} |" >> $GITHUB_STEP_SUMMARY
+          echo "| MIUI zip | ${MIUI_ZIP:-FAILED} |" >> $GITHUB_STEP_SUMMARY
           
