@@ -34,7 +34,8 @@ jobs:
       ARCH: arm64
       SUBARCH: arm64
       KERNEL_DEFCONFIG: vendor/kona-perf_defconfig
-      CLANG_VERSION: '17'
+      # Direct stable URL — no dynamic resolution needed
+      CLANG_URL: "https://github.com/ZyCromerZ/Clang/releases/download/17.0.6-20240310-release/Clang-17.0.6-20240310.tar.gz"
       TZ: Asia/Kuala_Lumpur
 
     steps:
@@ -52,39 +53,24 @@ jobs:
         id: cache-clang
         uses: actions/cache@v4
         with:
-          path: ${{ runner.tool_cache }}/clang
-          key: zyc-clang-${{ env.CLANG_VERSION }}
+          path: /opt/clang
+          key: zyc-clang-17.0.6-20240310
 
       - name: Download ZyC Clang (if not cached)
         if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
-          mkdir -p ${{ runner.tool_cache }}/clang
-          TAG=$(curl -s "https://api.github.com/repos/ZyCromerZ/Clang/releases" \
-            | python3 -c "
-          import sys, json
-          releases = json.load(sys.stdin)
-          for r in releases:
-              if r['tag_name'].startswith('${{ env.CLANG_VERSION }}.'):
-                  print(r['tag_name'])
-                  break
-          ")
-          echo "Using ZyC Clang tag: $TAG"
-          ASSET_URL=$(curl -s "https://api.github.com/repos/ZyCromerZ/Clang/releases/tags/${TAG}" \
-            | python3 -c "
-          import sys, json
-          data = json.load(sys.stdin)
-          for asset in data.get('assets', []):
-              if asset['name'].endswith('.tar.gz'):
-                  print(asset['browser_download_url'])
-                  break
-          ")
-          echo "Downloading: $ASSET_URL"
-          curl -Lo /tmp/clang.tar.gz "$ASSET_URL"
-          tar -xf /tmp/clang.tar.gz -C ${{ runner.tool_cache }}/clang
-          echo "Clang extraction complete."
+          mkdir -p /opt/clang
+          echo "Downloading Clang from: $CLANG_URL"
+          curl -L --retry 5 --retry-delay 3 -o /tmp/clang.tar.gz "$CLANG_URL"
+          echo "Extracting..."
+          tar -xf /tmp/clang.tar.gz -C /opt/clang
+          echo "Done. Clang binary:"
+          ls /opt/clang/bin/clang*
 
       - name: Add Clang to PATH
-        run: echo "${{ runner.tool_cache }}/clang/bin" >> $GITHUB_PATH
+        run: |
+          echo "/opt/clang/bin" >> $GITHUB_PATH
+          echo "KBUILD_COMPILER_STRING=$(/opt/clang/bin/clang --version | head -1)" >> $GITHUB_ENV
 
       - name: Clone kernel source
         run: |
@@ -92,7 +78,7 @@ jobs:
             -b "${{ github.event.inputs.KERNEL_BRANCH }}" \
             "https://github.com/${{ github.event.inputs.KERNEL_SOURCE }}" \
             kernel
-          echo "=== Kernel Makefile version ==="
+          echo "=== Kernel version ==="
           head -5 kernel/Makefile
           echo "KERNEL_DIR=$GITHUB_WORKSPACE/kernel" >> $GITHUB_ENV
 
@@ -106,8 +92,8 @@ jobs:
           git merge aosp/android-4.19-stable \
             --allow-unrelated-histories \
             --no-edit \
-            -m "Merge android-4.19-stable into munch kernel" || {
-              echo "::warning::Merge had conflicts, auto-resolving Makefile"
+            -m "Merge android-4.19-stable" || {
+              echo "::warning::Merge conflict — auto-resolving Makefile"
               git checkout --ours Makefile 2>/dev/null && git add Makefile || true
               git merge --continue --no-edit || {
                 echo "::error::Merge failed"
@@ -124,11 +110,11 @@ jobs:
             "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" \
             | bash -s legacy
           if [ ! -d "drivers/kernelsu" ]; then
-            echo "::error::KernelSU-Next setup failed"
+            echo "::error::KernelSU-Next setup failed — drivers/kernelsu not found"
             exit 1
           fi
           echo "KSU version: $(grep KSU_VERSION drivers/kernelsu/Makefile | head -1)"
-          DEFCONFIG_PATH="arch/arm64/configs/$(basename ${KERNEL_DEFCONFIG})"
+          DEFCONFIG_PATH="arch/arm64/configs/$(basename $KERNEL_DEFCONFIG)"
           printf '\n# KernelSU-Next\nCONFIG_KSU=y\nCONFIG_KSU_DEBUG=n\nCONFIG_KPROBES=y\nCONFIG_HAVE_KPROBES=y\nCONFIG_KPROBE_EVENTS=y\n' >> "$DEFCONFIG_PATH"
 
       - name: Integrate SUSFS
@@ -138,12 +124,12 @@ jobs:
           SUSFS_TAG=$(curl -s \
             https://api.github.com/repos/sidex15/susfs4ksu/releases/latest \
             | python3 -c "import sys,json; print(json.load(sys.stdin)['tag_name'])")
-          echo "SUSFS version: $SUSFS_TAG"
-          git clone --depth=1 -b "${SUSFS_TAG}" \
+          echo "SUSFS tag: $SUSFS_TAG"
+          git clone --depth=1 -b "$SUSFS_TAG" \
             https://github.com/sidex15/susfs4ksu /tmp/susfs
           PATCH_FILE="/tmp/susfs/kernel_patches/50_add_susfs_in_kernel-4.19.patch"
           if [ ! -f "$PATCH_FILE" ]; then
-            echo "::error::No 4.19 patch found"
+            echo "::error::4.19 patch not found. Available:"
             ls /tmp/susfs/kernel_patches/
             exit 1
           fi
@@ -152,17 +138,18 @@ jobs:
             || echo "::warning::SUSFS patch had rejects"
           KSU_PATCH="/tmp/susfs/kernel_patches/next/scope_minimize_patches_for_ksu_next.patch"
           if [ -f "$KSU_PATCH" ]; then
-            patch -p1 --forward < "$KSU_PATCH" || echo "::warning::KSU companion patch had rejects"
+            patch -p1 --forward < "$KSU_PATCH" \
+              || echo "::warning::KSU companion patch had rejects"
           fi
           find . -name "*.rej" -exec echo "REJECT: {}" \; -exec cat {} \;
-          DEFCONFIG_PATH="arch/arm64/configs/$(basename ${KERNEL_DEFCONFIG})"
+          DEFCONFIG_PATH="arch/arm64/configs/$(basename $KERNEL_DEFCONFIG)"
           printf '\n# SUSFS\nCONFIG_KSU_SUSFS=y\nCONFIG_KSU_SUSFS_SUS_PATH=y\nCONFIG_KSU_SUSFS_SUS_MOUNT=y\nCONFIG_KSU_SUSFS_SUS_KSTAT=y\nCONFIG_KSU_SUSFS_SUS_OVERLAYFS=n\nCONFIG_KSU_SUSFS_TRY_UMOUNT=y\nCONFIG_KSU_SUSFS_SPOOF_UNAME=y\nCONFIG_KSU_SUSFS_ENABLE_LOG=y\nCONFIG_KSU_SUSFS_AUTO_ADD_SUS_KSU_DEFAULT_MOUNT=y\nCONFIG_KSU_SUSFS_AUTO_ADD_TRY_UMOUNT_FOR_BIND_MOUNT=y\n' >> "$DEFCONFIG_PATH"
 
       - name: Enable BBR TCP
         if: ${{ github.event.inputs.ENABLE_BBR == 'true' }}
         working-directory: kernel
         run: |
-          DEFCONFIG_PATH="arch/arm64/configs/$(basename ${KERNEL_DEFCONFIG})"
+          DEFCONFIG_PATH="arch/arm64/configs/$(basename $KERNEL_DEFCONFIG)"
           printf '\n# BBR TCP\nCONFIG_TCP_CONG_BBR=y\nCONFIG_NET_SCH_FQ=y\nCONFIG_DEFAULT_TCP_CONG="bbr"\n' >> "$DEFCONFIG_PATH"
           echo "BBR config appended"
 
@@ -180,7 +167,7 @@ jobs:
             LLVM_IAS=1
             LOCALVERSION="-${{ github.event.inputs.KERNEL_NAME || 'VeilKernel-munch' }}"
           )
-          make O=out "${BUILD_FLAGS[@]}" ${KERNEL_DEFCONFIG}
+          make O=out "${BUILD_FLAGS[@]}" $KERNEL_DEFCONFIG
           if [ -f arch/arm64/configs/munch.config ]; then
             KCONFIG_ALLCONFIG=arch/arm64/configs/munch.config \
               make O=out "${BUILD_FLAGS[@]}" olddefconfig
@@ -189,14 +176,14 @@ jobs:
           fi
           echo "=== Config check ==="
           for cfg in CONFIG_KSU CONFIG_KPROBES CONFIG_TCP_CONG_BBR CONFIG_KSU_SUSFS; do
-            echo "  $(grep "^${cfg}" out/.config || echo "${cfg}: NOT SET")"
+            grep "^${cfg}" out/.config && true || echo "${cfg} = NOT SET"
           done
           time make O=out "${BUILD_FLAGS[@]}" \
             -j$(nproc --all) \
             Image.gz-dtb dtbo.img \
             2>&1 | tee build.log
           if [ ! -f out/arch/arm64/boot/Image.gz-dtb ]; then
-            echo "::error::Image.gz-dtb not found — build failed"
+            echo "::error::Build failed — Image.gz-dtb not found"
             tail -80 build.log
             exit 1
           fi
@@ -207,7 +194,8 @@ jobs:
         run: |
           git clone --depth=1 https://github.com/osm0sis/AnyKernel3 anykernel
           cp kernel/out/arch/arm64/boot/Image.gz-dtb anykernel/
-          [ -f kernel/out/arch/arm64/boot/dtbo.img ] && cp kernel/out/arch/arm64/boot/dtbo.img anykernel/ || true
+          [ -f kernel/out/arch/arm64/boot/dtbo.img ] && \
+            cp kernel/out/arch/arm64/boot/dtbo.img anykernel/ || true
           KNAME="${{ github.event.inputs.KERNEL_NAME || 'VeilKernel-munch' }}"
           {
             echo "# AnyKernel3 config - munch (POCO F4)"
