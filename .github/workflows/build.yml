@@ -33,7 +33,6 @@ jobs:
       SUBARCH: arm64
       KERNEL_DEFCONFIG: vendor/kona-perf_defconfig
       TZ: Asia/Kuala_Lumpur
-      # ZyC Clang 14 — confirmed active link file, good for 4.19 kernels
       CLANG_LINK_URL: "https://raw.githubusercontent.com/ZyCromerZ/Clang/main/Clang-14-link.txt"
 
     steps:
@@ -56,7 +55,6 @@ jobs:
           fi
           echo "Resolved Clang URL: $CLANG_URL"
           echo "CLANG_URL=$CLANG_URL" >> $GITHUB_ENV
-          # Extract a stable cache key from the filename in the URL
           CLANG_FILENAME=$(basename "$CLANG_URL" .tar.gz)
           echo "CLANG_CACHE_KEY=$CLANG_FILENAME" >> $GITHUB_ENV
 
@@ -91,27 +89,6 @@ jobs:
           echo "=== Kernel version ==="
           head -5 kernel/Makefile
           echo "KERNEL_DIR=$GITHUB_WORKSPACE/kernel" >> $GITHUB_ENV
-
-      - name: Merge latest AOSP 4.19-stable
-        working-directory: kernel
-        run: |
-          git config user.email "ci@build.local"
-          git config user.name "CI Build"
-          git remote add aosp https://android.googlesource.com/kernel/common
-          git fetch aosp android-4.19-stable --depth=1
-          git merge aosp/android-4.19-stable \
-            --allow-unrelated-histories \
-            --no-edit \
-            -m "Merge android-4.19-stable" || {
-              echo "::warning::Merge conflict — auto-resolving Makefile"
-              git checkout --ours Makefile 2>/dev/null && git add Makefile || true
-              git merge --continue --no-edit || {
-                echo "::error::Merge failed"
-                git diff --name-only --diff-filter=U
-                exit 1
-              }
-            }
-          head -5 Makefile
 
       - name: Integrate KernelSU-Next
         working-directory: kernel
