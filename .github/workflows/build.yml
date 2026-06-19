@@ -1,8 +1,6 @@
 name: Build Munch Kernel
 
 on:
-  push:
-    branches: [ main ]
   workflow_dispatch:
     inputs:
       KERNEL_SOURCE:
@@ -34,9 +32,9 @@ jobs:
       ARCH: arm64
       SUBARCH: arm64
       KERNEL_DEFCONFIG: vendor/kona-perf_defconfig
-      # Direct stable URL — no dynamic resolution needed
-      CLANG_URL: "https://github.com/ZyCromerZ/Clang/releases/download/17.0.6-20240310-release/Clang-17.0.6-20240310.tar.gz"
       TZ: Asia/Kuala_Lumpur
+      # ZyC Clang 14 — confirmed active link file, good for 4.19 kernels
+      CLANG_LINK_URL: "https://raw.githubusercontent.com/ZyCromerZ/Clang/main/Clang-14-link.txt"
 
     steps:
 
@@ -49,28 +47,40 @@ jobs:
             ccache libncurses-dev binutils-aarch64-linux-gnu \
             binutils-arm-linux-gnueabi
 
+      - name: Resolve Clang download URL
+        run: |
+          CLANG_URL=$(curl -s "$CLANG_LINK_URL" | tr -d '[:space:]')
+          if [ -z "$CLANG_URL" ]; then
+            echo "::error::Failed to resolve Clang URL from link file"
+            exit 1
+          fi
+          echo "Resolved Clang URL: $CLANG_URL"
+          echo "CLANG_URL=$CLANG_URL" >> $GITHUB_ENV
+          # Extract a stable cache key from the filename in the URL
+          CLANG_FILENAME=$(basename "$CLANG_URL" .tar.gz)
+          echo "CLANG_CACHE_KEY=$CLANG_FILENAME" >> $GITHUB_ENV
+
       - name: Cache ZyC Clang
         id: cache-clang
         uses: actions/cache@v4
         with:
           path: /opt/clang
-          key: zyc-clang-17.0.6-20240310
+          key: ${{ env.CLANG_CACHE_KEY }}
 
       - name: Download ZyC Clang (if not cached)
         if: steps.cache-clang.outputs.cache-hit != 'true'
         run: |
           mkdir -p /opt/clang
-          echo "Downloading Clang from: $CLANG_URL"
-          curl -L --retry 5 --retry-delay 3 -o /tmp/clang.tar.gz "$CLANG_URL"
+          echo "Downloading: $CLANG_URL"
+          curl -L --retry 5 --retry-delay 5 --fail -o /tmp/clang.tar.gz "$CLANG_URL"
           echo "Extracting..."
           tar -xf /tmp/clang.tar.gz -C /opt/clang
-          echo "Done. Clang binary:"
-          ls /opt/clang/bin/clang*
+          rm /tmp/clang.tar.gz
+          echo "Clang ready:"
+          /opt/clang/bin/clang --version
 
       - name: Add Clang to PATH
-        run: |
-          echo "/opt/clang/bin" >> $GITHUB_PATH
-          echo "KBUILD_COMPILER_STRING=$(/opt/clang/bin/clang --version | head -1)" >> $GITHUB_ENV
+        run: echo "/opt/clang/bin" >> $GITHUB_PATH
 
       - name: Clone kernel source
         run: |
@@ -110,7 +120,7 @@ jobs:
             "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/next/kernel/setup.sh" \
             | bash -s legacy
           if [ ! -d "drivers/kernelsu" ]; then
-            echo "::error::KernelSU-Next setup failed — drivers/kernelsu not found"
+            echo "::error::KernelSU-Next setup failed"
             exit 1
           fi
           echo "KSU version: $(grep KSU_VERSION drivers/kernelsu/Makefile | head -1)"
@@ -165,7 +175,7 @@ jobs:
             CROSS_COMPILE_ARM32=arm-linux-gnueabi-
             LLVM=1
             LLVM_IAS=1
-            LOCALVERSION="-${{ github.event.inputs.KERNEL_NAME || 'VeilKernel-munch' }}"
+            LOCALVERSION="-${{ github.event.inputs.KERNEL_NAME }}"
           )
           make O=out "${BUILD_FLAGS[@]}" $KERNEL_DEFCONFIG
           if [ -f arch/arm64/configs/munch.config ]; then
@@ -196,7 +206,7 @@ jobs:
           cp kernel/out/arch/arm64/boot/Image.gz-dtb anykernel/
           [ -f kernel/out/arch/arm64/boot/dtbo.img ] && \
             cp kernel/out/arch/arm64/boot/dtbo.img anykernel/ || true
-          KNAME="${{ github.event.inputs.KERNEL_NAME || 'VeilKernel-munch' }}"
+          KNAME="${{ github.event.inputs.KERNEL_NAME }}"
           {
             echo "# AnyKernel3 config - munch (POCO F4)"
             echo "properties() { '"
@@ -234,7 +244,7 @@ jobs:
       - name: Upload flashable zip
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ github.event.inputs.KERNEL_NAME || 'VeilKernel-munch' }}
+          name: ${{ github.event.inputs.KERNEL_NAME }}
           path: "*.zip"
           retention-days: 7
 
