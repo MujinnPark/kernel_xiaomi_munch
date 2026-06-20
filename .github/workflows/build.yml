@@ -55,22 +55,14 @@ jobs:
           tar -zxf clang.tar.gz -C $HOME/zyc-clang
           rm clang.tar.gz
 
-      - name: Clone apasitu kernel source
+      - name: Clone apasitu kernel source (default branch)
         run: |
-          # --no-single-branch lets us access all remote branches
-          git clone --depth=1 --no-single-branch \
+          # Use default branch — has build.sh, build-miui.sh AND ReSukiSU already integrated
+          git clone --depth=1 \
             https://github.com/AstideLabs/android_kernel_xiaomi_sm8250.git \
             apasitu
-          # Confirm build scripts exist on default branch
           ls apasitu/build.sh apasitu/build-miui.sh
-          # Overlay kernel source from android16-aptusitu-new
-          cd apasitu
-          git checkout origin/android16-aptusitu-new -- \
-            arch drivers fs include init ipc kernel lib mm net \
-            scripts security sound techpack tools usr virt \
-            Kbuild Kconfig Makefile AndroidKernel.mk
-          echo "Kernel source updated to android16-aptusitu-new"
-          ls build.sh build-miui.sh
+          echo "Branch: $(cd apasitu && git branch --show-current)"
 
       - name: Enable TCP BBR for munch
         run: |
