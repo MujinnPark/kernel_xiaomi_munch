@@ -3,285 +3,102 @@ name: 🔨 Build PitchKernel
 on:
   workflow_dispatch:
     inputs:
-      BUILD_TYPE:
-        description: 'Build type'
+      script:
+        description: 'Build script (build.sh = AOSP ROMs, build-miui.sh = MIUI/HyperOS)'
         required: true
-        default: 'sukisu'
+        default: 'build.sh'
         type: choice
         options:
-          - sukisu
-          - noksu
-  push:
-    tags:
-      - 'v*'
-
-env:
-  KERNEL_SOURCE: https://github.com/AstideLabs/android_kernel_xiaomi_sm8250.git
-  KERNEL_BRANCH: android16-aptusitu-new
-  DEVICE: munch
-  # Confirmed from Termux:
-  # arch/arm64/configs/vendor/kona_defconfig  (base)
-  # arch/arm64/configs/vendor/xiaomi/munch.config  (fragment)
-  BASE_DEFCONFIG: vendor/kona_defconfig
-  DEVICE_FRAGMENT: vendor/xiaomi/munch.config
-  KERNEL_NAME: PitchKernel
-  ANYKERNEL_SOURCE: https://github.com/kvsnr113/AnyKernel3.git
-  ANYKERNEL_BRANCH: main
-  # ZyCromerZ Clang 16 — same toolchain apasitu author uses (confirmed from their README)
-  CLANG_URL: https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260510-release/Clang-16.0.6-20260510.tar.gz
-  TZ: UTC
+          - build.sh
+          - build-miui.sh
+      ksu:
+        description: 'Enable ReSukiSU + SUSFS'
+        required: true
+        type: boolean
+        default: true
 
 jobs:
   build:
-    name: Build PitchKernel — munch (SM8250)
-    runs-on: ubuntu-22.04
+    name: PitchKernel — munch (${{ inputs.script }}) (${{ inputs.ksu && 'ReSukiSU+SUSFS' || 'NoKSU' }})
+    runs-on: ubuntu-latest
 
     steps:
-      - name: 📂 Checkout PitchKernel repo
-        uses: actions/checkout@v6
+      - name: 🧹 Cleanup disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc \
+            "/usr/local/share/boost" "$AGENT_TOOLSDIRECTORY"
 
       - name: 📦 Install dependencies
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y --no-install-recommends \
-            bc bison build-essential ca-certificates curl flex \
-            git libssl-dev libelf-dev lz4 make \
-            python3 python-is-python3 \
-            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf \
-            unzip wget zip zstd ccache libarchive-tools
-
-      - name: 🕒 Set build date
-        run: echo "BUILD_DATE=$(date +%Y%m%d-%H%M)" >> $GITHUB_ENV
+          sudo apt-get update
+          sudo apt-get install -y build-essential git curl wget \
+            bison flex zip bc cpio libssl-dev ccache python-is-python3
 
       - name: 🔧 Setup ccache
-        uses: hendrikmuhs/ccache-action@v1.2.20
+        uses: actions/cache@v5
         with:
-          max-size: 5G
-          key: pitchkernel-munch
+          path: ~/.cache/ccache_mikernel
+          key: pitchkernel-ccache-munch-${{ inputs.script }}-${{ github.run_id }}
+          restore-keys: |
+            pitchkernel-ccache-munch-${{ inputs.script }}-
+            pitchkernel-ccache-munch-
+            pitchkernel-ccache-
 
       - name: 🛠️ Setup ZyCromerZ Clang 16
         run: |
-          mkdir -p zyc-clang
-          wget -q --show-progress -O zyc-clang.tar.gz "${{ env.CLANG_URL }}"
-          tar -zxf zyc-clang.tar.gz -C zyc-clang
-          rm zyc-clang.tar.gz
-          echo "CLANG_PATH=$(pwd)/zyc-clang/bin" >> $GITHUB_ENV
-          echo "✅ $($(pwd)/zyc-clang/bin/clang --version | head -1)"
+          mkdir -p $HOME/zyc-clang
+          cd $HOME/zyc-clang
+          wget -q https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260510-release/Clang-16.0.6-20260510.tar.gz
+          tar -zxf Clang-16.0.6-20260510.tar.gz
+          rm Clang-16.0.6-20260510.tar.gz
 
-      - name: 🧬 Clone kernel source (AstideLabs/apasitu)
+      - name: 🧬 Clone apasitu kernel source
         run: |
           git clone --depth=1 \
-            -b ${{ env.KERNEL_BRANCH }} \
-            ${{ env.KERNEL_SOURCE }} \
+            -b android16-aptusitu-new \
+            https://github.com/AstideLabs/android_kernel_xiaomi_sm8250.git \
             kernel_source
-          cd kernel_source
-          echo "KERNEL_VERSION=$(make kernelversion)" >> $GITHUB_ENV
 
-      - name: 🔍 Verify config fragments
+      - name: ⚡ Enable TCP BBR
         run: |
-          BASE="kernel_source/arch/arm64/configs/${{ env.BASE_DEFCONFIG }}"
-          FRAG="kernel_source/arch/arm64/configs/${{ env.DEVICE_FRAGMENT }}"
-          [ -f "$BASE" ] || { echo "❌ Missing: $BASE"; exit 1; }
-          [ -f "$FRAG" ] || { echo "❌ Missing: $FRAG"; exit 1; }
-          echo "✅ Base:     ${{ env.BASE_DEFCONFIG }}"
-          echo "✅ Fragment: ${{ env.DEVICE_FRAGMENT }}"
-
-      - name: 📥 Clone AnyKernel3 + inject anykernel.sh
-        run: |
-          git clone --depth=1 \
-            -b ${{ env.ANYKERNEL_BRANCH }} \
-            ${{ env.ANYKERNEL_SOURCE }} \
-            AnyKernel3
-
-          cat > AnyKernel3/anykernel.sh << 'AKEOF'
-# AnyKernel3 — PitchKernel for Poco F4 / Redmi K40S (munch)
-# Frequency data verified from Lime kernel DTB binary analysis
-properties() { '
-kernel.string=PitchKernel by PitchDev
-do.devicecheck=1
-do.modules=0
-do.systemless=1
-do.cleanup=1
-do.cleanuponabort=0
-device.name1=munch
-device.name2=POCO F4
-device.name3=Redmi K40S
-device.name4=22021211RC
-device.name5=22021211RG
-supported.versions=11-16
-supported.patchlevels=
-'; }
-
-BLOCK=boot;
-IS_SLOT_DEVICE=auto;
-RAMDISK_COMPRESSION=auto;
-PATCH_VBMETA_FLAG=auto;
-NO_BLOCK_DISPLAY=1;
-
-. tools/ak3-core.sh;
-
-PROFILE_FILE=/data/.pitchkernel_freq_profile
-POSTBOOT_DIR=/data/adb/post-fs-data.d
-POSTBOOT_SCRIPT=$POSTBOOT_DIR/pitchkernel_freq.sh
-
-ui_print " "
-ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-ui_print "       ⚡  P I T C H K E R N E L  ⚡"
-ui_print "    Poco F4 / Redmi K40S  (munch)"
-ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-ui_print " "
-ui_print "  Vol+ = YES      Vol- = NO"
-ui_print " "
-ui_print "  [ OC ] Overclock — Silver:1804 Gold:3000 Prime:3072 MHz"
-ui_print "  Apply OVERCLOCK? (Vol+/Vol-)"
-if choose; then
-    echo "overclock" > $PROFILE_FILE
-    ui_print "  ✓ OVERCLOCK selected"
-else
-ui_print "  [ ST ] Stable — Silver:1804 Gold:2419 Prime:2841 MHz"
-ui_print "  Apply STABLE? (Vol+/Vol-)"
-if choose; then
-    echo "stable" > $PROFILE_FILE
-    ui_print "  ✓ STABLE selected"
-else
-ui_print "  [ BAT ] Battery — Silver:1516 Gold:1804 Prime:2419 MHz"
-ui_print "  Apply BATTERY? (Vol+/Vol-)"
-if choose; then
-    echo "battery" > $PROFILE_FILE
-    ui_print "  ✓ BATTERY selected"
-else
-    echo "stable" > $PROFILE_FILE
-    ui_print "  ℹ Defaulting to STABLE"
-fi; fi; fi
-
-mkdir -p $POSTBOOT_DIR 2>/dev/null
-cat > $POSTBOOT_SCRIPT << SCRIPT_EOF
-#!/system/bin/sh
-PROFILE=\$(cat /data/.pitchkernel_freq_profile 2>/dev/null || echo "stable")
-sf() { [ -f "\$1" ] && echo "\$2" > "\$1"; }
-case "\$PROFILE" in
-  overclock) S=1804800; G=3000000; P=3072000 ;;
-  battery)   S=1516800; G=1804800; P=2419200 ;;
-  *)         S=1804800; G=2419200; P=2841600 ;;
-esac
-for c in 0 1 2 3; do sf /sys/devices/system/cpu/cpu\${c}/cpufreq/scaling_max_freq \$S; done
-for c in 4 5 6;   do sf /sys/devices/system/cpu/cpu\${c}/cpufreq/scaling_max_freq \$G; done
-sf /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq \$P
-SCRIPT_EOF
-chmod 755 $POSTBOOT_SCRIPT
-
-dump_boot;
-write_boot;
-
-ui_print " "
-ui_print "  PitchKernel installed!"
-ui_print "  Profile: $(cat $PROFILE_FILE 2>/dev/null || echo stable)"
-ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-AKEOF
+          MUNCH_CONF="kernel_source/arch/arm64/configs/vendor/xiaomi/munch.config"
+          {
+            echo ""
+            echo "# TCP BBR — PitchKernel"
+            echo "CONFIG_TCP_CONG_BBR=y"
+            echo "CONFIG_NET_SCH_FQ=y"
+            echo "CONFIG_DEFAULT_TCP_CONG=\"bbr\""
+          } >> "$MUNCH_CONF"
+          echo "✅ BBR appended to munch.config"
+          grep -i "bbr\|fq" "$MUNCH_CONF"
 
       - name: 🔨 Build kernel
         run: |
-          export PATH="${{ env.CLANG_PATH }}:$PATH"
-          export ARCH=arm64
-          export SUBARCH=arm64
-          export KBUILD_BUILD_USER=PitchDev
-          export KBUILD_BUILD_HOST=PitchKernel
-
-          # LLVM=1: use clang for all tools — avoids Kconfig GCC not found error
-          MAKE_ARGS="
-            O=out
-            ARCH=arm64
-            LLVM=1
-            LLVM_IAS=1
-            CC=clang
-            LD=ld.lld
-            AR=llvm-ar
-            NM=llvm-nm
-            OBJCOPY=llvm-objcopy
-            OBJDUMP=llvm-objdump
-            STRIP=llvm-strip
-            CROSS_COMPILE=aarch64-linux-gnu-
-            CROSS_COMPILE_ARM32=arm-linux-gnueabihf-
-          "
-
           cd kernel_source
-          mkdir -p out
+          chmod +x ${{ inputs.script }}
 
-          echo "⚙️ Step 1: Base config..."
-          make $MAKE_ARGS ${{ env.BASE_DEFCONFIG }}
+          if [ "${{ inputs.ksu }}" == "true" ]; then
+            echo "🔑 Building with ReSukiSU + SUSFS..."
+            bash ${{ inputs.script }} munch ksu
+          else
+            echo "🚫 Building without KSU..."
+            bash ${{ inputs.script }} munch
+          fi
 
-          echo "⚙️ Step 2: Merge munch fragment..."
-          ./scripts/kconfig/merge_config.sh -m -O out \
-            out/.config \
-            arch/arm64/configs/${{ env.DEVICE_FRAGMENT }}
-
-          echo "⚙️ Step 3: Resolve symbols..."
-          make $MAKE_ARGS olddefconfig
-
-          echo "⚙️ Step 4: Set localversion..."
-          ./scripts/config --file out/.config \
-            --set-str LOCALVERSION "-PitchKernel-munch"
-
-          echo "🔨 Building ($(nproc) threads)..."
-          make -j$(nproc) $MAKE_ARGS \
-            CC="ccache clang" \
-            2>&1 | tee ../build.log
-
-          [ -f out/arch/arm64/boot/Image ] || \
-            { echo "❌ Build failed — Image not found"; exit 1; }
-          echo "✅ Build successful"
-
-      - name: 📦 Package flashable zip
+      - name: 📦 Rename zip to PitchKernel
         run: |
-          BUILD_TYPE="${{ github.event.inputs.BUILD_TYPE || 'sukisu' }}"
-          ZIP_NAME="${{ env.KERNEL_NAME }}-${BUILD_TYPE}-munch-${{ env.BUILD_DATE }}.zip"
-          echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
-
-          cp kernel_source/out/arch/arm64/boot/Image AnyKernel3/
-          [ -f kernel_source/out/arch/arm64/boot/dtbo.img ] && \
-            cp kernel_source/out/arch/arm64/boot/dtbo.img AnyKernel3/
-          [ -f kernel_source/out/arch/arm64/boot/dtb ] && \
-            cp kernel_source/out/arch/arm64/boot/dtb AnyKernel3/
-
-          cd AnyKernel3
-          zip -r9 "../${ZIP_NAME}" . -x "*.git*" -x "README.md"
-          cd ..
-          echo "📦 $(du -sh ${ZIP_NAME})"
+          DATE=$(date +%Y%m%d-%H%M)
+          TYPE="${{ inputs.ksu == 'true' && 'sukisu' || 'noksu' }}"
+          for f in kernel_source/*.zip; do
+            [ -f "$f" ] && mv "$f" "PitchKernel-${TYPE}-munch-${DATE}.zip"
+          done
+          ls *.zip || { echo "❌ No zip found"; exit 1; }
 
       - name: 📤 Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: PitchKernel-munch-${{ env.BUILD_DATE }}
-          path: |
-            ${{ env.ZIP_NAME }}
-            build.log
+          name: PitchKernel-munch-${{ github.run_number }}
+          path: ./*.zip
+          if-no-files-found: error
           retention-days: 7
-
-      - name: 🚀 Create Release (on tag push)
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: ncipollo/release-action@v1
-        with:
-          artifacts: ${{ env.ZIP_NAME }},build.log
-          token: ${{ secrets.GITHUB_TOKEN }}
-          name: "PitchKernel ${{ github.ref_name }} — munch"
-          body: |
-            ## ⚡ PitchKernel ${{ github.ref_name }}
-            **Device:** Poco F4 / Redmi K40S (munch) — SM8250
-            **Kernel:** ${{ env.KERNEL_VERSION }}-PitchKernel-munch
-            **Base:** AstideLabs/android_kernel_xiaomi_sm8250 @ `android16-aptusitu-new`
-            **Config:** vendor/kona_defconfig + vendor/xiaomi/munch.config
-            **Toolchain:** ZyCromerZ Clang 16.0.6 (LLVM=1)
-            **Type:** ${{ github.event.inputs.BUILD_TYPE || 'sukisu' }}
-
-            ### CPU Frequency Profiles (selected during flash)
-            | Profile | Silver cpu0-3 | Gold cpu4-6 | Prime cpu7 |
-            |---|---|---|---|
-            | Overclock | 1804 MHz | 3000 MHz | 3072 MHz |
-            | Stable | 1804 MHz | 2419 MHz | 2841 MHz |
-            | Battery | 1516 MHz | 1804 MHz | 2419 MHz |
-
-            ### Root: sukisu = ReSukiSU + SUSFS | noksu = Magisk / APatch
-            ### Flash via TWRP or OrangeFox. Android 11–16.
-          draft: false
-          prerelease: false
           
