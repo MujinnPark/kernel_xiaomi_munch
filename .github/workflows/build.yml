@@ -26,14 +26,6 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # Checkout apasitu kernel source directly — build.sh lives here
-      - name: 🧬 Checkout apasitu kernel source
-        uses: actions/checkout@v4
-        with:
-          repository: AstideLabs/android_kernel_xiaomi_sm8250
-          ref: android16-aptusitu-new
-          fetch-depth: 1
-
       - name: 🧹 Cleanup disk space
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc \
@@ -43,8 +35,8 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential git curl wget \
-            bison flex zip bc cpio libssl-dev ccache python-is-python3 \
-            gcc-arm-linux-gnueabi
+            bison flex zip bc cpio libssl-dev ccache \
+            python-is-python3 gcc-arm-linux-gnueabi
 
       - name: 🔧 Setup ccache
         uses: actions/cache@v4
@@ -62,10 +54,19 @@ jobs:
             -O clang.tar.gz
           tar -zxf clang.tar.gz -C $HOME/zyc-clang
           rm clang.tar.gz
+          echo "✅ $($HOME/zyc-clang/bin/clang --version | head -1)"
+
+      - name: 🧬 Clone apasitu kernel source
+        run: |
+          git clone --depth=1 \
+            -b android16-aptusitu-new \
+            https://github.com/AstideLabs/android_kernel_xiaomi_sm8250.git \
+            apasitu
+          ls apasitu/build.sh apasitu/build-miui.sh
 
       - name: ⚡ Enable TCP BBR for munch
         run: |
-          FRAG="arch/arm64/configs/vendor/xiaomi/munch.config"
+          FRAG="apasitu/arch/arm64/configs/vendor/xiaomi/munch.config"
           {
             echo ""
             echo "# TCP BBR — PitchKernel"
@@ -73,22 +74,23 @@ jobs:
             echo "CONFIG_NET_SCH_FQ=y"
             echo "CONFIG_DEFAULT_TCP_CONG=\"bbr\""
           } >> "$FRAG"
-          echo "✅ BBR enabled in munch.config"
+          echo "✅ BBR enabled"
 
       - name: 🔨 Build kernel
         run: |
+          cd apasitu
           chmod +x build.sh build-miui.sh
-          KSU_ARG=${{ inputs.ksu == true && 'ksu' || '' }}
+          KSU_ARG=${{ inputs.ksu == true && '"ksu"' || '""' }}
           bash ${{ inputs.script }} munch $KSU_ARG
 
       - name: 📦 Rename zip to PitchKernel
         run: |
           DATE=$(date +%Y%m%d-%H%M)
-          TYPE="${{ inputs.ksu == 'true' && 'sukisu' || 'noksu' }}"
-          for f in *.zip; do
+          TYPE=${{ inputs.ksu == 'true' && '"sukisu"' || '"noksu"' }}
+          for f in apasitu/*.zip; do
             [ -f "$f" ] && mv "$f" "PitchKernel-${TYPE}-munch-${DATE}.zip" && break
           done
-          ls *.zip || { echo "❌ No zip found"; ls -la; exit 1; }
+          ls *.zip || { echo "❌ No zip found"; ls apasitu/*.zip 2>/dev/null || echo "No zips in apasitu/"; exit 1; }
 
       - name: 📤 Upload artifacts
         uses: actions/upload-artifact@v4
