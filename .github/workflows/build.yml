@@ -1,4 +1,4 @@
-name: 🔨 Build PitchKernel
+name: Build PitchKernel
 
 on:
   workflow_dispatch:
@@ -22,23 +22,23 @@ permissions:
 
 jobs:
   build:
-    name: PitchKernel — munch (${{ inputs.script }}) (${{ inputs.ksu && 'ReSukiSU+SUSFS' || 'NoKSU' }})
+    name: PitchKernel munch
     runs-on: ubuntu-latest
 
     steps:
-      - name: 🧹 Cleanup disk space
+      - name: Cleanup disk space
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc \
             "/usr/local/share/boost" "$AGENT_TOOLSDIRECTORY"
 
-      - name: 📦 Install dependencies
+      - name: Install dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential git curl wget \
             bison flex zip bc cpio libssl-dev ccache \
             python-is-python3 gcc-arm-linux-gnueabi
 
-      - name: 🔧 Setup ccache
+      - name: Setup ccache
         uses: actions/cache@v4
         with:
           path: ~/.cache/ccache_mikernel
@@ -47,16 +47,15 @@ jobs:
             pitchkernel-ccache-munch-
             pitchkernel-ccache-
 
-      - name: 🛠️ Setup ZyCromerZ Clang 16
+      - name: Setup ZyCromerZ Clang 16
         run: |
           mkdir -p $HOME/zyc-clang
           wget -q https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260510-release/Clang-16.0.6-20260510.tar.gz \
             -O clang.tar.gz
           tar -zxf clang.tar.gz -C $HOME/zyc-clang
           rm clang.tar.gz
-          echo "✅ $($HOME/zyc-clang/bin/clang --version | head -1)"
 
-      - name: 🧬 Clone apasitu kernel source
+      - name: Clone apasitu kernel source
         run: |
           git clone --depth=1 \
             -b android16-aptusitu-new \
@@ -64,35 +63,40 @@ jobs:
             apasitu
           ls apasitu/build.sh apasitu/build-miui.sh
 
-      - name: ⚡ Enable TCP BBR for munch
+      - name: Enable TCP BBR for munch
         run: |
           FRAG="apasitu/arch/arm64/configs/vendor/xiaomi/munch.config"
-          {
-            echo ""
-            echo "# TCP BBR — PitchKernel"
-            echo "CONFIG_TCP_CONG_BBR=y"
-            echo "CONFIG_NET_SCH_FQ=y"
-            echo "CONFIG_DEFAULT_TCP_CONG=\"bbr\""
-          } >> "$FRAG"
-          echo "✅ BBR enabled"
+          echo "" >> "$FRAG"
+          echo "# TCP BBR - PitchKernel" >> "$FRAG"
+          echo "CONFIG_TCP_CONG_BBR=y" >> "$FRAG"
+          echo "CONFIG_NET_SCH_FQ=y" >> "$FRAG"
+          echo "CONFIG_DEFAULT_TCP_CONG=\"bbr\"" >> "$FRAG"
+          echo "BBR enabled"
 
-      - name: 🔨 Build kernel
+      - name: Build kernel
         run: |
           cd apasitu
           chmod +x build.sh build-miui.sh
-          KSU_ARG=${{ inputs.ksu == true && '"ksu"' || '""' }}
-          bash ${{ inputs.script }} munch $KSU_ARG
+          if [ "${{ inputs.ksu }}" == "true" ]; then
+            bash ${{ inputs.script }} munch ksu
+          else
+            bash ${{ inputs.script }} munch
+          fi
 
-      - name: 📦 Rename zip to PitchKernel
+      - name: Rename zip to PitchKernel
         run: |
           DATE=$(date +%Y%m%d-%H%M)
-          TYPE=${{ inputs.ksu == 'true' && '"sukisu"' || '"noksu"' }}
+          if [ "${{ inputs.ksu }}" == "true" ]; then
+            TYPE="sukisu"
+          else
+            TYPE="noksu"
+          fi
           for f in apasitu/*.zip; do
             [ -f "$f" ] && mv "$f" "PitchKernel-${TYPE}-munch-${DATE}.zip" && break
           done
-          ls *.zip || { echo "❌ No zip found"; ls apasitu/*.zip 2>/dev/null || echo "No zips in apasitu/"; exit 1; }
+          ls *.zip || { echo "No zip found"; ls apasitu/; exit 1; }
 
-      - name: 📤 Upload artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: PitchKernel-munch-${{ github.run_number }}
