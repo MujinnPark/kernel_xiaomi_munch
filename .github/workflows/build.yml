@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       script:
-        description: 'Build script (build.sh = AOSP ROMs, build-miui.sh = MIUI/HyperOS)'
+        description: 'Target ROM type'
         required: true
         default: 'build.sh'
         type: choice
@@ -17,12 +17,23 @@ on:
         type: boolean
         default: true
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: PitchKernel — munch (${{ inputs.script }}) (${{ inputs.ksu && 'ReSukiSU+SUSFS' || 'NoKSU' }})
     runs-on: ubuntu-latest
 
     steps:
+      # Checkout apasitu kernel source directly — build.sh lives here
+      - name: 🧬 Checkout apasitu kernel source
+        uses: actions/checkout@v4
+        with:
+          repository: AstideLabs/android_kernel_xiaomi_sm8250
+          ref: android16-aptusitu-new
+          fetch-depth: 1
+
       - name: 🧹 Cleanup disk space
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc \
@@ -32,63 +43,52 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential git curl wget \
-            bison flex zip bc cpio libssl-dev ccache python-is-python3
+            bison flex zip bc cpio libssl-dev ccache python-is-python3 \
+            gcc-arm-linux-gnueabi
 
       - name: 🔧 Setup ccache
-        uses: actions/cache@v5
+        uses: actions/cache@v4
         with:
           path: ~/.cache/ccache_mikernel
-          key: pitchkernel-munch-${{ inputs.script }}-${{ github.run_id }}
+          key: pitchkernel-ccache-munch-${{ github.run_id }}
           restore-keys: |
-            pitchkernel-munch-${{ inputs.script }}-
-            pitchkernel-munch-
-            pitchkernel-
+            pitchkernel-ccache-munch-
+            pitchkernel-ccache-
 
       - name: 🛠️ Setup ZyCromerZ Clang 16
         run: |
           mkdir -p $HOME/zyc-clang
-          wget -q -O /tmp/zyc-clang.tar.gz \
-            https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260510-release/Clang-16.0.6-20260510.tar.gz
-          tar -zxf /tmp/zyc-clang.tar.gz -C $HOME/zyc-clang
-          rm /tmp/zyc-clang.tar.gz
-          echo "✅ Clang: $($HOME/zyc-clang/bin/clang --version | head -1)"
+          wget -q https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260510-release/Clang-16.0.6-20260510.tar.gz \
+            -O clang.tar.gz
+          tar -zxf clang.tar.gz -C $HOME/zyc-clang
+          rm clang.tar.gz
 
-      - name: 🧬 Clone apasitu kernel source
+      - name: ⚡ Enable TCP BBR for munch
         run: |
-          git clone --depth=1 \
-            -b android16-aptusitu-new \
-            https://github.com/AstideLabs/android_kernel_xiaomi_sm8250.git \
-            kernel_source
-          ls kernel_source/build.sh kernel_source/build-miui.sh
-
-      - name: ⚡ Enable TCP BBR
-        run: |
-          FRAG="kernel_source/arch/arm64/configs/vendor/xiaomi/munch.config"
-          echo "" >> "$FRAG"
-          echo "# TCP BBR — PitchKernel" >> "$FRAG"
-          echo "CONFIG_TCP_CONG_BBR=y" >> "$FRAG"
-          echo "CONFIG_NET_SCH_FQ=y" >> "$FRAG"
-          echo "CONFIG_DEFAULT_TCP_CONG=\"bbr\"" >> "$FRAG"
-          echo "✅ BBR enabled"
+          FRAG="arch/arm64/configs/vendor/xiaomi/munch.config"
+          {
+            echo ""
+            echo "# TCP BBR — PitchKernel"
+            echo "CONFIG_TCP_CONG_BBR=y"
+            echo "CONFIG_NET_SCH_FQ=y"
+            echo "CONFIG_DEFAULT_TCP_CONG=\"bbr\""
+          } >> "$FRAG"
+          echo "✅ BBR enabled in munch.config"
 
       - name: 🔨 Build kernel
         run: |
-          cd kernel_source
           chmod +x build.sh build-miui.sh
-          if [ "${{ inputs.ksu }}" == "true" ]; then
-            bash ${{ inputs.script }} munch ksu
-          else
-            bash ${{ inputs.script }} munch
-          fi
+          KSU_ARG=${{ inputs.ksu == true && 'ksu' || '' }}
+          bash ${{ inputs.script }} munch $KSU_ARG
 
       - name: 📦 Rename zip to PitchKernel
         run: |
           DATE=$(date +%Y%m%d-%H%M)
-          TYPE=${{ inputs.ksu == 'true' && '"sukisu"' || '"noksu"' }}
-          for f in kernel_source/*.zip; do
+          TYPE="${{ inputs.ksu == 'true' && 'sukisu' || 'noksu' }}"
+          for f in *.zip; do
             [ -f "$f" ] && mv "$f" "PitchKernel-${TYPE}-munch-${DATE}.zip" && break
           done
-          ls *.zip || { echo "❌ No zip found in kernel_source/"; ls kernel_source/; exit 1; }
+          ls *.zip || { echo "❌ No zip found"; ls -la; exit 1; }
 
       - name: 📤 Upload artifacts
         uses: actions/upload-artifact@v4
