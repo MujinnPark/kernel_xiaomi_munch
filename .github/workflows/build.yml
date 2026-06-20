@@ -57,15 +57,24 @@ jobs:
 
       - name: Clone apasitu kernel source
         run: |
+          # Clone default branch (has build.sh/build-miui.sh)
           git clone --depth=1 \
-            -b android16-aptusitu-new \
             https://github.com/AstideLabs/android_kernel_xiaomi_sm8250.git \
             apasitu
-          echo "=== Root files in apasitu ==="
-          ls -la apasitu/*.sh || echo "No .sh files in root"
-          ls -la apasitu/build* || echo "No build* files in root"
-          echo "=== All root-level files ==="
-          ls apasitu/
+          # Verify build scripts exist
+          ls apasitu/build.sh apasitu/build-miui.sh
+          # Now fetch and checkout the kernel source branch on top
+          # This replaces the kernel code with android16-aptusitu-new
+          # but keeps the scripts from default branch
+          cd apasitu
+          git fetch --depth=1 origin android16-aptusitu-new
+          # Checkout kernel source files only (not the scripts)
+          git checkout origin/android16-aptusitu-new -- \
+            arch drivers fs include init ipc kernel lib mm net \
+            scripts security sound techpack tools usr virt \
+            Kbuild Kconfig Makefile AndroidKernel.mk
+          echo "Done — kernel source updated to android16-aptusitu-new"
+          ls build.sh build-miui.sh
 
       - name: Enable TCP BBR for munch
         run: |
