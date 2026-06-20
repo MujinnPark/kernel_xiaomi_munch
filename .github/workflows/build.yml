@@ -16,15 +16,15 @@ on:
       - 'v*'
 
 env:
-  # Base: kvsnr113/xiaomi_sm8250_kernel (E404) — confirmed munch support + SUSFS
-  KERNEL_SOURCE: https://github.com/kvsnr113/xiaomi_sm8250_kernel.git
-  KERNEL_BRANCH: main
+  KERNEL_SOURCE: https://github.com/AstideLabs/android_kernel_xiaomi_sm8250.git
+  KERNEL_BRANCH: android16-aptusitu-new
   DEVICE: munch
-  DEFCONFIG: munch_defconfig
+  # Apasitu uses fragment-based config: kona_defconfig + vendor/xiaomi/munch.config
+  BASE_DEFCONFIG: vendor/kona_defconfig
+  DEVICE_FRAGMENT: vendor/xiaomi/munch.config
   KERNEL_NAME: PitchKernel
   ANYKERNEL_SOURCE: https://github.com/kvsnr113/AnyKernel3.git
   ANYKERNEL_BRANCH: main
-  # Neutron Clang — best for SM8250 non-GKI 4.19
   CLANG_URL: https://github.com/Neutron-Toolchains/clang-build-catalogue/releases/download/12042023/neutron-clang-12042023.tar.zst
   TZ: UTC
 
@@ -54,23 +54,21 @@ jobs:
           max-size: 5G
           key: pitchkernel-munch
 
-      - name: 🧬 Clone kernel source (kvsnr113/E404 — munch confirmed)
+      - name: 🧬 Clone kernel source (AstideLabs/apasitu)
         run: |
           git clone --depth=1 -b ${{ env.KERNEL_BRANCH }} \
             ${{ env.KERNEL_SOURCE }} kernel_source
           cd kernel_source
           echo "KERNEL_VERSION=$(make kernelversion)" >> $GITHUB_ENV
 
-      - name: 🔍 Verify munch_defconfig
+      - name: 🔍 Verify config fragments exist
         run: |
-          # E404 kernel stores defconfig at arch/arm64/configs/munch_defconfig
-          if [ ! -f kernel_source/arch/arm64/configs/munch_defconfig ]; then
-            echo "ERROR: munch_defconfig not found!"
-            echo "Available configs:"
-            ls kernel_source/arch/arm64/configs/ | grep -i "munch\|apollo\|alioth"
-            exit 1
-          fi
-          echo "✅ munch_defconfig confirmed"
+          BASE=kernel_source/arch/arm64/configs/${{ env.BASE_DEFCONFIG }}
+          FRAG=kernel_source/arch/arm64/configs/${{ env.DEVICE_FRAGMENT }}
+          [ -f "$BASE" ] || { echo "❌ Missing: $BASE"; exit 1; }
+          [ -f "$FRAG" ] || { echo "❌ Missing: $FRAG"; exit 1; }
+          echo "✅ Base:     ${{ env.BASE_DEFCONFIG }}"
+          echo "✅ Fragment: ${{ env.DEVICE_FRAGMENT }}"
 
       - name: 🛠️ Setup Neutron Clang
         run: |
@@ -79,13 +77,12 @@ jobs:
           tar --use-compress-program=zstd -xf neutron-clang.tar.zst -C clang
           rm neutron-clang.tar.zst
           echo "CLANG_PATH=$(pwd)/clang/bin" >> $GITHUB_ENV
-          echo "Clang: $(clang/bin/clang --version | head -1)"
+          echo "✅ $(clang/bin/clang --version | head -1)"
 
       - name: 📥 Clone AnyKernel3 (kvsnr113/E404 fork)
         run: |
           git clone --depth=1 -b ${{ env.ANYKERNEL_BRANCH }} \
             ${{ env.ANYKERNEL_SOURCE }} AnyKernel3
-          # Replace with PitchKernel's anykernel.sh (freq profile selector)
           cp anykernel.sh AnyKernel3/anykernel.sh
 
       - name: 🔨 Build kernel
@@ -108,10 +105,19 @@ jobs:
           cd kernel_source
           mkdir -p out
 
-          echo "⚙️ Generating config..."
-          make O=out ARCH=arm64 munch_defconfig
+          echo "⚙️ Merging base defconfig + munch fragment..."
+          # Step 1: generate base config
+          make O=out ARCH=arm64 ${{ env.BASE_DEFCONFIG }}
 
-          # Inject kernel name into localversion
+          # Step 2: merge device fragment on top
+          ./scripts/kconfig/merge_config.sh -m -O out \
+            out/.config \
+            arch/arm64/configs/${{ env.DEVICE_FRAGMENT }}
+
+          # Step 3: resolve all symbols to final .config
+          make O=out ARCH=arm64 olddefconfig
+
+          # Step 4: inject PitchKernel localversion
           ./scripts/config --file out/.config \
             --set-str LOCALVERSION "-PitchKernel-munch"
 
@@ -168,7 +174,8 @@ jobs:
             ## ⚡ PitchKernel ${{ github.ref_name }}
             **Device:** Poco F4 / Redmi K40S (munch) — SM8250
             **Kernel:** ${{ env.KERNEL_VERSION }}-PitchKernel-munch
-            **Base:** kvsnr113/xiaomi_sm8250_kernel (E404) @ `main`
+            **Base:** AstideLabs/android_kernel_xiaomi_sm8250 @ `android16-aptusitu-new`
+            **Config:** vendor/kona_defconfig + vendor/xiaomi/munch.config
             **AnyKernel3:** kvsnr113/AnyKernel3
             **Built:** ${{ env.BUILD_DATE }}
             **Type:** ${{ github.event.inputs.BUILD_TYPE || 'sukisu' }}
@@ -181,12 +188,11 @@ jobs:
             | Battery | 1516 MHz | 1804 MHz | 2419 MHz |
 
             ### Root
-            - **sukisu build:** ReSukiSU + SUSFS
-            - **noksu build:** Magisk / APatch
+            - **sukisu:** ReSukiSU + SUSFS
+            - **noksu:** Magisk / APatch
 
             ### Install
             Flash via TWRP or OrangeFox. Select frequency profile during flash.
-            Android 11–16 compatible.
           draft: false
           prerelease: false
           
