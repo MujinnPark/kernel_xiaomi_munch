@@ -19,6 +19,9 @@ env:
   KERNEL_SOURCE: https://github.com/AstideLabs/android_kernel_xiaomi_sm8250.git
   KERNEL_BRANCH: android16-aptusitu-new
   DEVICE: munch
+  # Confirmed from Termux:
+  # arch/arm64/configs/vendor/kona_defconfig  (base)
+  # arch/arm64/configs/vendor/xiaomi/munch.config  (fragment)
   BASE_DEFCONFIG: vendor/kona_defconfig
   DEVICE_FRAGMENT: vendor/xiaomi/munch.config
   KERNEL_NAME: PitchKernel
@@ -44,6 +47,7 @@ jobs:
             bc bison build-essential ca-certificates curl flex \
             git libssl-dev libelf-dev lz4 make \
             python3 python-is-python3 \
+            gcc-aarch64-linux-gnu gcc-arm-linux-gnueabihf \
             unzip wget zip zstd ccache libarchive-tools
 
       - name: 🕒 Set build date
@@ -89,120 +93,122 @@ jobs:
             ${{ env.ANYKERNEL_SOURCE }} \
             AnyKernel3
 
-          # Write PitchKernel anykernel.sh directly — no file dependency
           cat > AnyKernel3/anykernel.sh << 'AKEOF'
-          # AnyKernel3 — PitchKernel for Poco F4 / Redmi K40S (munch)
-          # Frequency data verified from Lime kernel DTB binary analysis
-          properties() { '
-          kernel.string=PitchKernel by PitchDev
-          do.devicecheck=1
-          do.modules=0
-          do.systemless=1
-          do.cleanup=1
-          do.cleanuponabort=0
-          device.name1=munch
-          device.name2=POCO F4
-          device.name3=Redmi K40S
-          device.name4=22021211RC
-          device.name5=22021211RG
-          supported.versions=11-16
-          supported.patchlevels=
-          '; }
+# AnyKernel3 — PitchKernel for Poco F4 / Redmi K40S (munch)
+# Frequency data verified from Lime kernel DTB binary analysis
+properties() { '
+kernel.string=PitchKernel by PitchDev
+do.devicecheck=1
+do.modules=0
+do.systemless=1
+do.cleanup=1
+do.cleanuponabort=0
+device.name1=munch
+device.name2=POCO F4
+device.name3=Redmi K40S
+device.name4=22021211RC
+device.name5=22021211RG
+supported.versions=11-16
+supported.patchlevels=
+'; }
 
-          BLOCK=boot;
-          IS_SLOT_DEVICE=auto;
-          RAMDISK_COMPRESSION=auto;
-          PATCH_VBMETA_FLAG=auto;
-          NO_BLOCK_DISPLAY=1;
+BLOCK=boot;
+IS_SLOT_DEVICE=auto;
+RAMDISK_COMPRESSION=auto;
+PATCH_VBMETA_FLAG=auto;
+NO_BLOCK_DISPLAY=1;
 
-          . tools/ak3-core.sh;
+. tools/ak3-core.sh;
 
-          PROFILE_FILE=/data/.pitchkernel_freq_profile
-          POSTBOOT_DIR=/data/adb/post-fs-data.d
-          POSTBOOT_SCRIPT=$POSTBOOT_DIR/pitchkernel_freq.sh
+PROFILE_FILE=/data/.pitchkernel_freq_profile
+POSTBOOT_DIR=/data/adb/post-fs-data.d
+POSTBOOT_SCRIPT=$POSTBOOT_DIR/pitchkernel_freq.sh
 
-          ui_print " "
-          ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          ui_print "       ⚡  P I T C H K E R N E L  ⚡"
-          ui_print "    Poco F4 / Redmi K40S  (munch)"
-          ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          ui_print " "
-          ui_print "  Vol+ = YES      Vol- = NO"
-          ui_print " "
+ui_print " "
+ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+ui_print "       ⚡  P I T C H K E R N E L  ⚡"
+ui_print "    Poco F4 / Redmi K40S  (munch)"
+ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+ui_print " "
+ui_print "  Vol+ = YES      Vol- = NO"
+ui_print " "
+ui_print "  [ OC ] Overclock — Silver:1804 Gold:3000 Prime:3072 MHz"
+ui_print "  Apply OVERCLOCK? (Vol+/Vol-)"
+if choose; then
+    echo "overclock" > $PROFILE_FILE
+    ui_print "  ✓ OVERCLOCK selected"
+else
+ui_print "  [ ST ] Stable — Silver:1804 Gold:2419 Prime:2841 MHz"
+ui_print "  Apply STABLE? (Vol+/Vol-)"
+if choose; then
+    echo "stable" > $PROFILE_FILE
+    ui_print "  ✓ STABLE selected"
+else
+ui_print "  [ BAT ] Battery — Silver:1516 Gold:1804 Prime:2419 MHz"
+ui_print "  Apply BATTERY? (Vol+/Vol-)"
+if choose; then
+    echo "battery" > $PROFILE_FILE
+    ui_print "  ✓ BATTERY selected"
+else
+    echo "stable" > $PROFILE_FILE
+    ui_print "  ℹ Defaulting to STABLE"
+fi; fi; fi
 
-          ui_print "  [ OC ] Overclock"
-          ui_print "    Silver: 1804 MHz | Gold: 3000 MHz | Prime: 3072 MHz"
-          ui_print "  Apply OVERCLOCK? (Vol+/Vol-)"
-          if choose; then
-              echo "overclock" > $PROFILE_FILE
-              ui_print "  ✓ OVERCLOCK selected"
-          else
+mkdir -p $POSTBOOT_DIR 2>/dev/null
+cat > $POSTBOOT_SCRIPT << SCRIPT_EOF
+#!/system/bin/sh
+PROFILE=\$(cat /data/.pitchkernel_freq_profile 2>/dev/null || echo "stable")
+sf() { [ -f "\$1" ] && echo "\$2" > "\$1"; }
+case "\$PROFILE" in
+  overclock) S=1804800; G=3000000; P=3072000 ;;
+  battery)   S=1516800; G=1804800; P=2419200 ;;
+  *)         S=1804800; G=2419200; P=2841600 ;;
+esac
+for c in 0 1 2 3; do sf /sys/devices/system/cpu/cpu\${c}/cpufreq/scaling_max_freq \$S; done
+for c in 4 5 6;   do sf /sys/devices/system/cpu/cpu\${c}/cpufreq/scaling_max_freq \$G; done
+sf /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq \$P
+SCRIPT_EOF
+chmod 755 $POSTBOOT_SCRIPT
 
-          ui_print "  [ ST ] Stable"
-          ui_print "    Silver: 1804 MHz | Gold: 2419 MHz | Prime: 2841 MHz"
-          ui_print "  Apply STABLE? (Vol+/Vol-)"
-          if choose; then
-              echo "stable" > $PROFILE_FILE
-              ui_print "  ✓ STABLE selected"
-          else
+dump_boot;
+write_boot;
 
-          ui_print "  [ BAT ] Battery"
-          ui_print "    Silver: 1516 MHz | Gold: 1804 MHz | Prime: 2419 MHz"
-          ui_print "  Apply BATTERY? (Vol+/Vol-)"
-          if choose; then
-              echo "battery" > $PROFILE_FILE
-              ui_print "  ✓ BATTERY selected"
-          else
-              echo "stable" > $PROFILE_FILE
-              ui_print "  ℹ Defaulting to STABLE"
-          fi; fi; fi
-
-          mkdir -p $POSTBOOT_DIR 2>/dev/null
-          cat > $POSTBOOT_SCRIPT << SCRIPT_EOF
-          #!/system/bin/sh
-          PROFILE=\$(cat /data/.pitchkernel_freq_profile 2>/dev/null || echo "stable")
-          set_freq() { [ -f "\$1" ] && echo "\$2" > "\$1"; }
-          case "\$PROFILE" in
-            overclock) SILVER=1804800; GOLD=3000000; PRIME=3072000 ;;
-            battery)   SILVER=1516800; GOLD=1804800; PRIME=2419200 ;;
-            *)         SILVER=1804800; GOLD=2419200; PRIME=2841600 ;;
-          esac
-          for cpu in 0 1 2 3; do set_freq /sys/devices/system/cpu/cpu\${cpu}/cpufreq/scaling_max_freq \$SILVER; done
-          for cpu in 4 5 6;   do set_freq /sys/devices/system/cpu/cpu\${cpu}/cpufreq/scaling_max_freq \$GOLD;   done
-          set_freq /sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq \$PRIME
-          SCRIPT_EOF
-          chmod 755 $POSTBOOT_SCRIPT
-
-          dump_boot;
-          write_boot;
-
-          ui_print " "
-          ui_print "  PitchKernel installed! Profile: $(cat $PROFILE_FILE)"
-          ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          AKEOF
+ui_print " "
+ui_print "  PitchKernel installed!"
+ui_print "  Profile: $(cat $PROFILE_FILE 2>/dev/null || echo stable)"
+ui_print "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+AKEOF
 
       - name: 🔨 Build kernel
         run: |
           export PATH="${{ env.CLANG_PATH }}:$PATH"
           export ARCH=arm64
           export SUBARCH=arm64
-          export CC="ccache clang"
-          export AR=llvm-ar
-          export NM=llvm-nm
-          export OBJCOPY=llvm-objcopy
-          export OBJDUMP=llvm-objdump
-          export STRIP=llvm-strip
-          export CROSS_COMPILE=aarch64-linux-gnu-
-          export CROSS_COMPILE_ARM32=arm-linux-gnueabihf-
-          export CLANG_TRIPLE=aarch64-linux-gnu-
           export KBUILD_BUILD_USER=PitchDev
           export KBUILD_BUILD_HOST=PitchKernel
+
+          # LLVM=1: use clang for all tools — avoids Kconfig GCC not found error
+          MAKE_ARGS="
+            O=out
+            ARCH=arm64
+            LLVM=1
+            LLVM_IAS=1
+            CC=clang
+            LD=ld.lld
+            AR=llvm-ar
+            NM=llvm-nm
+            OBJCOPY=llvm-objcopy
+            OBJDUMP=llvm-objdump
+            STRIP=llvm-strip
+            CROSS_COMPILE=aarch64-linux-gnu-
+            CROSS_COMPILE_ARM32=arm-linux-gnueabihf-
+          "
 
           cd kernel_source
           mkdir -p out
 
           echo "⚙️ Step 1: Base config..."
-          make O=out ARCH=arm64 ${{ env.BASE_DEFCONFIG }}
+          make $MAKE_ARGS ${{ env.BASE_DEFCONFIG }}
 
           echo "⚙️ Step 2: Merge munch fragment..."
           ./scripts/kconfig/merge_config.sh -m -O out \
@@ -210,26 +216,19 @@ jobs:
             arch/arm64/configs/${{ env.DEVICE_FRAGMENT }}
 
           echo "⚙️ Step 3: Resolve symbols..."
-          make O=out ARCH=arm64 olddefconfig
+          make $MAKE_ARGS olddefconfig
 
           echo "⚙️ Step 4: Set localversion..."
           ./scripts/config --file out/.config \
             --set-str LOCALVERSION "-PitchKernel-munch"
 
           echo "🔨 Building ($(nproc) threads)..."
-          make -j$(nproc) O=out ARCH=arm64 \
+          make -j$(nproc) $MAKE_ARGS \
             CC="ccache clang" \
-            CROSS_COMPILE=aarch64-linux-gnu- \
-            CROSS_COMPILE_ARM32=arm-linux-gnueabihf- \
-            CLANG_TRIPLE=aarch64-linux-gnu- \
-            AR=llvm-ar NM=llvm-nm \
-            OBJCOPY=llvm-objcopy \
-            OBJDUMP=llvm-objdump \
-            STRIP=llvm-strip \
             2>&1 | tee ../build.log
 
           [ -f out/arch/arm64/boot/Image ] || \
-            { echo "❌ Build failed"; exit 1; }
+            { echo "❌ Build failed — Image not found"; exit 1; }
           echo "✅ Build successful"
 
       - name: 📦 Package flashable zip
@@ -271,7 +270,7 @@ jobs:
             **Kernel:** ${{ env.KERNEL_VERSION }}-PitchKernel-munch
             **Base:** AstideLabs/android_kernel_xiaomi_sm8250 @ `android16-aptusitu-new`
             **Config:** vendor/kona_defconfig + vendor/xiaomi/munch.config
-            **Toolchain:** ZyCromerZ Clang 16.0.6
+            **Toolchain:** ZyCromerZ Clang 16.0.6 (LLVM=1)
             **Type:** ${{ github.event.inputs.BUILD_TYPE || 'sukisu' }}
 
             ### CPU Frequency Profiles (selected during flash)
