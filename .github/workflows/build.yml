@@ -61,7 +61,11 @@ jobs:
             -b android16-aptusitu-new \
             https://github.com/AstideLabs/android_kernel_xiaomi_sm8250.git \
             apasitu
-          ls apasitu/build.sh apasitu/build-miui.sh
+          echo "=== Root files in apasitu ==="
+          ls -la apasitu/*.sh || echo "No .sh files in root"
+          ls -la apasitu/build* || echo "No build* files in root"
+          echo "=== All root-level files ==="
+          ls apasitu/
 
       - name: Enable TCP BBR for munch
         run: |
@@ -71,7 +75,6 @@ jobs:
           echo "CONFIG_TCP_CONG_BBR=y" >> "$FRAG"
           echo "CONFIG_NET_SCH_FQ=y" >> "$FRAG"
           echo "CONFIG_DEFAULT_TCP_CONG=\"bbr\"" >> "$FRAG"
-          echo "BBR enabled"
 
       - name: Build kernel
         run: |
