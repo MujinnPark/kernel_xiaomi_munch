@@ -171,24 +171,66 @@ jobs:
           echo "BUILD_DATE=${DATE}" >> $GITHUB_ENV
           echo "BUILD_TYPE=${TYPE}" >> $GITHUB_ENV
 
-          # build.sh leaves apasitu/anykernel/ populated with the real
-          # compiled Image/dtb/dtbo.img after zipping once — no second
-          # compile needed. We reuse that same directory twice, each time
-          # substituting the variant="PROFILE_FIXED" placeholder in
-          # anykernel.sh with a fixed value (stable/overclock). anykernel.sh
-          # itself bakes that into pitchkernel_cpufreq.sh via sed at flash
-          # time — deterministic, no interactivity, no getevent dependency
-          # in these builds at all.
+          # IMPORTANT (found via real on-device failure + job log + actual
+          # zip inspection, not inference): build.sh ALWAYS builds both
+          # AOSP and MIUI sections sequentially in one invocation. The MIUI
+          # section runs `rm -rf anykernel/kernels/` (build.sh ~line 347)
+          # and repopulates it with ONLY kernels/miui/, deleting
+          # kernels/aosp/ entirely. So by the time this step runs (after
+          # `bash build.sh` returns), apasitu/anykernel/kernels/ only ever
+          # contains MIUI output, never AOSP — confirmed by inspecting a
+          # real failed zip that contained kernels/miui/* but no
+          # kernels/aosp/* at all, explaining "No kernel found for AOSP
+          # ROM!" on a genuine AOSP device.
+          #
+          # Fix: build.sh produces its OWN self-contained AOSP zip
+          # (APTKernel_AOSP_*.zip) immediately after the AOSP section,
+          # before the MIUI section ever runs. Extract Image/dtb/dtbo.img
+          # from THAT zip instead of trusting post-script anykernel/kernels/.
+          AOSP_SRC_ZIP=$(find apasitu -maxdepth 1 -name "APTKernel_AOSP_*.zip" | head -1)
+          if [ -z "$AOSP_SRC_ZIP" ] || [ ! -f "$AOSP_SRC_ZIP" ]; then
+            echo "ERROR: could not find build.sh's own APTKernel_AOSP_*.zip output."
+            find apasitu -maxdepth 1 -name "*.zip"
+            exit 1
+          fi
+          echo "Found AOSP source zip: $AOSP_SRC_ZIP"
+
           AK3_DIR="apasitu/anykernel"
           if [ ! -d "$AK3_DIR" ]; then
             echo "ERROR: $AK3_DIR not found — build.sh may have changed its output layout."
             exit 1
           fi
 
+          mkdir -p /tmp/aosp_kernel_extract
+          unzip -q -j "$AOSP_SRC_ZIP" "kernels/aosp/Image" "kernels/aosp/dtb" "kernels/aosp/dtbo.img" -d /tmp/aosp_kernel_extract
+          for f in Image dtb dtbo.img; do
+            if [ ! -f "/tmp/aosp_kernel_extract/$f" ]; then
+              echo "ERROR: $f not found inside $AOSP_SRC_ZIP either. The AOSP build itself may have failed silently."
+              exit 1
+            fi
+          done
+          echo "Confirmed real AOSP Image/dtb/dtbo.img extracted from build.sh's own zip:"
+          ls -lh /tmp/aosp_kernel_extract/
+
           for profile in stable overclock; do
             WORKDIR="/tmp/ak3_${profile}"
             rm -rf "$WORKDIR"
             cp -r "$AK3_DIR" "$WORKDIR"
+
+            # AnyKernel3 tooling/scripts/patch files from anykernel/ are
+            # unaffected by the AOSP/MIUI kernels/ wipe (only kernels/
+            # itself gets rm -rf'd, not the rest of the directory) — but
+            # overwrite kernels/ with the verified-real AOSP files above.
+            rm -rf "$WORKDIR/kernels"
+            mkdir -p "$WORKDIR/kernels/aosp"
+            cp /tmp/aosp_kernel_extract/Image "$WORKDIR/kernels/aosp/"
+            cp /tmp/aosp_kernel_extract/dtb "$WORKDIR/kernels/aosp/"
+            cp /tmp/aosp_kernel_extract/dtbo.img "$WORKDIR/kernels/aosp/"
+
+            if [ ! -f "$WORKDIR/kernels/aosp/Image" ]; then
+              echo "ERROR: Image still missing in $WORKDIR after explicit copy. Aborting."
+              exit 1
+            fi
 
             if ! grep -q 'variant="PROFILE_FIXED";' "$WORKDIR/anykernel.sh"; then
               echo "ERROR: expected placeholder variant=\"PROFILE_FIXED\"; not found in anykernel.sh."
@@ -207,9 +249,16 @@ jobs:
 
             cd "$WORKDIR"
             zip -r9 "$ZIP_NAME" ./* -x .git .gitignore "*.zip" >/dev/null
+            # Verify the kernel files actually made it into the final zip,
+            # not just into the working directory — this is the exact
+            # check that was missing last time and let a broken zip ship.
+            if ! unzip -l "$ZIP_NAME" | grep -q "kernels/aosp/Image"; then
+              echo "ERROR: kernels/aosp/Image missing from final $ZIP_NAME despite being in $WORKDIR."
+              exit 1
+            fi
             mv "$ZIP_NAME" "$GITHUB_WORKSPACE/"
             cd "$GITHUB_WORKSPACE"
-            echo "Packaged: $ZIP_NAME"
+            echo "Packaged and verified: $ZIP_NAME"
           done
 
           ls -lh *.zip
