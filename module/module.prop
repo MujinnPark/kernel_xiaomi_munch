@@ -1,0 +1,6 @@
+id=pitchkernel_cpufreq
+name=PitchKernel CPU Frequency
+version=v1.0
+versionCode=1
+author=Mujinn
+description=Applies CPU frequency profile selected during kernel flash
