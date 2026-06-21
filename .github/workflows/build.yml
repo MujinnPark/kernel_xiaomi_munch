@@ -26,6 +26,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout PitchKernel repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
       - name: Cleanup disk space
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc \
@@ -55,14 +60,12 @@ jobs:
           tar -zxf clang.tar.gz -C $HOME/zyc-clang
           rm clang.tar.gz
 
-      - name: Clone apasitu kernel source (default branch)
+      - name: Clone apasitu kernel source
         run: |
-          # Use default branch — has build.sh, build-miui.sh AND ReSukiSU already integrated
-          git clone --depth=1 \
+          git clone --depth=1 --no-single-branch \
             https://github.com/AstideLabs/android_kernel_xiaomi_sm8250.git \
             apasitu
           ls apasitu/build.sh apasitu/build-miui.sh
-          echo "Branch: $(cd apasitu && git branch --show-current)"
 
       - name: Enable TCP BBR for munch
         run: |
@@ -94,7 +97,11 @@ jobs:
           for f in apasitu/*.zip; do
             [ -f "$f" ] && mv "$f" "PitchKernel-${TYPE}-munch-${DATE}.zip" && break
           done
-          ls *.zip || { echo "No zip found"; ls apasitu/; exit 1; }
+          ls *.zip || { echo "No zip found"; exit 1; }
+          echo "ZIP_NAME=$(ls *.zip | head -1)" >> $GITHUB_ENV
+          echo "ZIP_PATH=$(pwd)/$(ls *.zip | head -1)" >> $GITHUB_ENV
+          echo "BUILD_DATE=${DATE}" >> $GITHUB_ENV
+          echo "BUILD_TYPE=${TYPE}" >> $GITHUB_ENV
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -103,4 +110,46 @@ jobs:
           path: ./*.zip
           if-no-files-found: error
           retention-days: 7
+
+      - name: Send artifact to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_THREAD_ID_ARTIFACT: ${{ secrets.TELEGRAM_THREAD_ID_ARTIFACT }}
+          ZIP_PATH: ${{ env.ZIP_PATH }}
+          ZIP_NAME: ${{ env.ZIP_NAME }}
+          KERNEL_VERSION: "4.19"
+          ROOT_SOLUTION: ${{ inputs.ksu == 'true' && 'RESUKISU' || 'VANILLA' }}
+          SUSFS_ENABLED: ${{ inputs.ksu }}
+          KERNEL_BRANCH: "android16-aptusitu-new (default)"
+          COMPILER_STRING: "ZyCromerZ Clang 16.0.6"
+          KERNEL_SRC: "apasitu"
+        run: |
+          source luminaire/release/telegram.sh
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: PitchKernel-munch-${{ env.BUILD_DATE }}
+          name: "PitchKernel ${{ env.BUILD_DATE }} — munch"
+          body: |
+            ## PitchKernel — Poco F4 / Redmi K40S (munch)
+
+            **Build date:** ${{ env.BUILD_DATE }}
+            **Type:** ${{ env.BUILD_TYPE }}
+            **Base:** AstideLabs/android_kernel_xiaomi_sm8250
+            **Toolchain:** ZyCromerZ Clang 16.0.6
+
+            ### Features
+            - ReSukiSU + SUSFS (${{ inputs.ksu == 'true' && 'enabled' || 'disabled' }})
+            - TCP BBR congestion control
+            - Auto-detects AOSP / MIUI at flash time
+            - CPU Frequency Profile selector (Overclock / Stable / Battery)
+
+            ### Installation
+            Flash via TWRP or OrangeFox. Supports Android 11-16.
+          files: ./*.zip
+          token: ${{ secrets.GITHUB_TOKEN }}
+          draft: false
+          prerelease: false
           
