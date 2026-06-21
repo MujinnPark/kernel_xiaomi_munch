@@ -33,10 +33,11 @@ jobs:
 
       - name: Notify build started
         run: |
-          TEXT="🔨 PitchKernel build started%0ADevice: munch (Poco F4)%0AType: ${{ inputs.ksu == 'true' && 'ReSukiSU+SUSFS' || 'NoKSU' }} — ${{ inputs.script }}%0ADate: $(date +'%Y-%m-%d %H:%M UTC')%0ARun: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          TEXT="🔨 <b>PitchKernel</b> — Build Started%0ADevice: munch (Poco F4)%0AType: ${{ inputs.ksu == 'true' && 'ReSukiSU+SUSFS' || 'NoKSU' }} — ${{ inputs.script }}%0ADate: $(date +'%Y-%m-%d %H:%M UTC')"
           curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
             -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
             -d "message_thread_id=${{ secrets.TELEGRAM_THREAD_ID_EVENT }}" \
+            -d "parse_mode=HTML" \
             -d "disable_web_page_preview=true" \
             -d "text=${TEXT}" | jq '.ok'
 
