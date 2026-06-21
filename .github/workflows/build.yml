@@ -150,7 +150,7 @@ jobs:
           fi
           echo "CONFIG_TCP_CONG_BBR=y and CONFIG_DEFAULT_TCP_CONG=\"bbr\" both confirmed."
 
-      - name: Rename zip to PitchKernel
+      - name: Package Stable and Overclock zips
         run: |
           DATE=$(date +%Y%m%d-%H%M)
           if [ "${{ inputs.ksu }}" == "true" ]; then
@@ -158,39 +158,85 @@ jobs:
           else
             TYPE="noksu"
           fi
-          for f in apasitu/*.zip; do
-            [ -f "$f" ] && mv "$f" "PitchKernel-${TYPE}-munch-${DATE}.zip" && break
-          done
-          ls *.zip || { echo "No zip found"; exit 1; }
-          echo "ZIP_NAME=$(ls *.zip | head -1)" >> $GITHUB_ENV
-          echo "ZIP_PATH=$(pwd)/$(ls *.zip | head -1)" >> $GITHUB_ENV
           echo "BUILD_DATE=${DATE}" >> $GITHUB_ENV
           echo "BUILD_TYPE=${TYPE}" >> $GITHUB_ENV
 
-      - name: Package CPU freq module
-        run: |
-          DATE=$(date +%Y%m%d-%H%M)
-          MODULE_ZIP="PitchKernel-cpufreq-module-${DATE}.zip"
+          # build.sh ALWAYS builds both AOSP and MIUI sections sequentially.
+          # The MIUI section deletes anykernel/kernels/aosp/ on its way to
+          # populating kernels/miui/ — confirmed via real on-device failure
+          # and direct zip inspection. So we extract Image/dtb/dtbo.img from
+          # build.sh's own self-contained AOSP zip (captured before MIUI's
+          # cleanup runs), not from the post-script state of anykernel/.
+          AOSP_SRC_ZIP=$(find apasitu -maxdepth 1 -name "APTKernel_AOSP_*.zip" | head -1)
+          if [ -z "$AOSP_SRC_ZIP" ] || [ ! -f "$AOSP_SRC_ZIP" ]; then
+            echo "ERROR: could not find build.sh's own APTKernel_AOSP_*.zip output."
+            find apasitu -maxdepth 1 -name "*.zip"
+            exit 1
+          fi
+          echo "Found AOSP source zip: $AOSP_SRC_ZIP"
 
-          mkdir -p /tmp/module_build/META-INF/com/google/android
-          cp module/post-fs-data.sh /tmp/module_build/
-          cp module/module.prop /tmp/module_build/
+          AK3_DIR="apasitu/anykernel"
+          if [ ! -d "$AK3_DIR" ]; then
+            echo "ERROR: $AK3_DIR not found — build.sh may have changed its output layout."
+            exit 1
+          fi
 
-          cat > /tmp/module_build/META-INF/com/google/android/update-binary << 'BINEOF'
-          #!/sbin/sh
-          SKIPUNZIP=1
-          unzip -o "$ZIPFILE" 'module.prop' -d "$MODPATH"
-          unzip -o "$ZIPFILE" 'post-fs-data.sh' -d "$MODPATH"
-          set_perm "$MODPATH/post-fs-data.sh" root root 0755
-          BINEOF
+          mkdir -p /tmp/aosp_kernel_extract
+          unzip -q -j "$AOSP_SRC_ZIP" "kernels/aosp/Image" "kernels/aosp/dtb" "kernels/aosp/dtbo.img" -d /tmp/aosp_kernel_extract
+          for f in Image dtb dtbo.img; do
+            if [ ! -f "/tmp/aosp_kernel_extract/$f" ]; then
+              echo "ERROR: $f not found inside $AOSP_SRC_ZIP either. The AOSP build itself may have failed silently."
+              exit 1
+            fi
+          done
+          echo "Confirmed real AOSP Image/dtb/dtbo.img extracted from build.sh's own zip:"
+          ls -lh /tmp/aosp_kernel_extract/
 
-          printf '#MAGISK\n' > /tmp/module_build/META-INF/com/google/android/updater-script
+          for profile in stable overclock; do
+            WORKDIR="/tmp/ak3_${profile}"
+            rm -rf "$WORKDIR"
+            cp -r "$AK3_DIR" "$WORKDIR"
 
-          cd /tmp/module_build
-          zip -r9 "$GITHUB_WORKSPACE/$MODULE_ZIP" . >/dev/null
-          cd "$GITHUB_WORKSPACE"
-          echo "MODULE_ZIP=${MODULE_ZIP}" >> $GITHUB_ENV
-          echo "Packaged: $MODULE_ZIP ($(du -sh $MODULE_ZIP | cut -f1))"
+            rm -rf "$WORKDIR/kernels"
+            mkdir -p "$WORKDIR/kernels/aosp"
+            cp /tmp/aosp_kernel_extract/Image "$WORKDIR/kernels/aosp/"
+            cp /tmp/aosp_kernel_extract/dtb "$WORKDIR/kernels/aosp/"
+            cp /tmp/aosp_kernel_extract/dtbo.img "$WORKDIR/kernels/aosp/"
+
+            if [ ! -f "$WORKDIR/kernels/aosp/Image" ]; then
+              echo "ERROR: Image still missing in $WORKDIR after explicit copy. Aborting."
+              exit 1
+            fi
+
+            if ! grep -q 'variant="PROFILE_FIXED";' "$WORKDIR/anykernel.sh"; then
+              echo "ERROR: expected placeholder variant=\"PROFILE_FIXED\"; not found in anykernel.sh."
+              echo "The fork's anykernel.sh may have changed — update this step to match."
+              exit 1
+            fi
+            sed -i "s/variant=\"PROFILE_FIXED\";/variant=\"${profile}\";/" "$WORKDIR/anykernel.sh"
+            ACTUAL=$(grep "variant=\"${profile}\";" "$WORKDIR/anykernel.sh")
+            echo "[$profile] anykernel.sh -> $ACTUAL"
+
+            if [ "$profile" = "stable" ]; then
+              ZIP_NAME="PitchKernel-${TYPE}-munch-Stable-${DATE}.zip"
+            else
+              ZIP_NAME="PitchKernel-${TYPE}-munch-Overclock-${DATE}.zip"
+            fi
+
+            cd "$WORKDIR"
+            zip -r9 "$ZIP_NAME" ./* -x .git .gitignore "*.zip" >/dev/null
+            if ! unzip -l "$ZIP_NAME" | grep -q "kernels/aosp/Image"; then
+              echo "ERROR: kernels/aosp/Image missing from final $ZIP_NAME despite being in $WORKDIR."
+              exit 1
+            fi
+            mv "$ZIP_NAME" "$GITHUB_WORKSPACE/"
+            cd "$GITHUB_WORKSPACE"
+            echo "Packaged and verified: $ZIP_NAME"
+          done
+
+          ls -lh *.zip
+          echo "STABLE_ZIP=PitchKernel-${TYPE}-munch-Stable-${DATE}.zip" >> $GITHUB_ENV
+          echo "OC_ZIP=PitchKernel-${TYPE}-munch-Overclock-${DATE}.zip" >> $GITHUB_ENV
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -200,15 +246,31 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Send artifact to Telegram
+      - name: Send Stable artifact to Telegram
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_THREAD_ID_ARTIFACT: ${{ secrets.TELEGRAM_THREAD_ID_ARTIFACT }}
-          ZIP_PATH: ${{ env.ZIP_PATH }}
-          ZIP_NAME: ${{ env.ZIP_NAME }}
+          ZIP_PATH: ${{ github.workspace }}/${{ env.STABLE_ZIP }}
+          ZIP_NAME: ${{ env.STABLE_ZIP }}
           KERNEL_VERSION: "4.19"
-          ROOT_SOLUTION: ${{ inputs.ksu == 'true' && 'RESUKISU' || 'VANILLA' }}
+          ROOT_SOLUTION: ${{ inputs.ksu && 'RESUKISU' || 'VANILLA' }}
+          SUSFS_ENABLED: ${{ inputs.ksu }}
+          KERNEL_BRANCH: "android16-aptusitu-new (default)"
+          COMPILER_STRING: "ZyCromerZ Clang 16.0.6"
+          KERNEL_SRC: "apasitu"
+        run: |
+          source PitchKernel/release/telegram.sh
+
+      - name: Send Overclock artifact to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_THREAD_ID_ARTIFACT: ${{ secrets.TELEGRAM_THREAD_ID_ARTIFACT }}
+          ZIP_PATH: ${{ github.workspace }}/${{ env.OC_ZIP }}
+          ZIP_NAME: ${{ env.OC_ZIP }}
+          KERNEL_VERSION: "4.19"
+          ROOT_SOLUTION: ${{ inputs.ksu && 'RESUKISU' || 'VANILLA' }}
           SUSFS_ENABLED: ${{ inputs.ksu }}
           KERNEL_BRANCH: "android16-aptusitu-new (default)"
           COMPILER_STRING: "ZyCromerZ Clang 16.0.6"
@@ -230,10 +292,10 @@ jobs:
             **Toolchain:** ZyCromerZ Clang 16.0.6
 
             ### Features
-            - ReSukiSU + SUSFS (${{ inputs.ksu == 'true' && 'enabled' || 'disabled' }})
+            - ReSukiSU + SUSFS (${{ inputs.ksu && 'enabled' || 'disabled' }})
             - TCP BBR congestion control
             - Auto-detects AOSP / MIUI at flash time
-            - CPU Frequency Profile selector (Overclock / Stable / Battery)
+            - CPU Frequency Profile: separate Stable / Overclock zips, applied via init service (no separate module needed)
 
             ### Installation
             Flash via TWRP or OrangeFox. Supports Android 11-16.
@@ -241,5 +303,6 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: false
           prerelease: false
+
 
           
