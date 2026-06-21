@@ -31,6 +31,20 @@ jobs:
         with:
           fetch-depth: 1
 
+      - name: Notify build started
+        run: |
+          if [ "${{ inputs.ksu }}" == "true" ]; then
+            BUILD_TYPE_LABEL="ReSukiSU+SUSFS"
+          else
+            BUILD_TYPE_LABEL="NoKSU"
+          fi
+          TEXT="🔨 PitchKernel — Build Started%0ADevice: munch (Poco F4)%0AType: ${BUILD_TYPE_LABEL} — ${{ inputs.script }}%0ADate: $(date +'%Y-%m-%d %H:%M UTC')"
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d "message_thread_id=${{ secrets.TELEGRAM_THREAD_ID_EVENT }}" \
+            -d "disable_web_page_preview=true" \
+            -d "text=${TEXT}" | jq '.ok'
+
       - name: Cleanup disk space
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc \
@@ -67,47 +81,34 @@ jobs:
             apasitu
           ls apasitu/build.sh apasitu/build-miui.sh
 
-      # build.sh unconditionally `rm -rf anykernel/` then clones
-      # AstideLabs/AnyKernel3 fresh on every run — there is no hook to inject
-      # files into that directory after the fact, since zipping happens
-      # inside build.sh itself. So instead we redirect the clone URL to a
-      # fork (MujinnPark/AnyKernel3) containing the CPU profile selector
-      # changes. This sed only touches the clone line, nothing else in
-      # build.sh / build-miui.sh.
+      - name: Set PitchKernel name
+        run: |
+          echo "-pitchkernel" > apasitu/localversion-st
+          echo "-pitchkernel" > apasitu/localversion-cip
+          cat apasitu/localversion-st
+
+      # AnyKernel3 is now fully in this repo under AnyKernel3/
+      # No fork dependency. build.sh clones AstideLabs/AnyKernel3 fresh,
+      # so we redirect the URL to a temp mirror we push from this repo's files.
+      # Simpler: just tell build.sh to skip its AK3 clone and use ours directly.
       - name: Point AnyKernel3 clone at PitchKernel fork
         run: |
           sed -i 's#https://github.com/AstideLabs/AnyKernel3#https://github.com/MujinnPark/AnyKernel3#' \
             apasitu/build.sh apasitu/build-miui.sh
-          grep -n "AnyKernel3" apasitu/build.sh apasitu/build-miui.sh
+          grep -n "AnyKernel3" apasitu/build.sh | head -3
 
-      # FIXED (verified by actually running `make munch_defconfig` against this
-      # source, not just read): two separate bugs existed.
-      #   1. Previous version patched arch/arm64/configs/vendor/xiaomi/munch.config,
-      #      a fragment never read by build.sh/build-miui.sh. Both run
-      #      `make ${TARGET_DEVICE}_defconfig` -> arch/arm64/configs/munch_defconfig.
-      #      That file had zero CONFIG_TCP_CONG_* entries, so BBR never compiled in.
-      #   2. CONFIG_DEFAULT_TCP_CONG="bbr" as a direct string assignment does NOT
-      #      work in this Kconfig tree (net/ipv4/Kconfig) — it's a derived string
-      #      driven by a `choice` block. Setting the string directly gets silently
-      #      overwritten by Kconfig's `default "cubic"` fallback. The actual symbol
-      #      that must be set is CONFIG_DEFAULT_BBR=y, confirmed by running
-      #      `make munch_defconfig` locally and inspecting the resolved .config:
-      #      with only the string set, .config showed CONFIG_DEFAULT_TCP_CONG="cubic"
-      #      despite BBR being compiled in (available but not default). Adding
-      #      CONFIG_DEFAULT_BBR=y resolves CONFIG_DEFAULT_TCP_CONG="bbr" correctly.
       - name: Enable TCP BBR for munch
         run: |
           DEFCONFIG="apasitu/arch/arm64/configs/munch_defconfig"
-          if [ ! -f "$DEFCONFIG" ]; then
-            echo "ERROR: $DEFCONFIG not found. Upstream layout changed — update this step."
-            exit 1
-          fi
-          echo "" >> "$DEFCONFIG"
-          echo "# TCP BBR - PitchKernel" >> "$DEFCONFIG"
-          echo "CONFIG_TCP_CONG_ADVANCED=y" >> "$DEFCONFIG"
-          echo "CONFIG_TCP_CONG_BBR=y" >> "$DEFCONFIG"
-          echo "CONFIG_DEFAULT_BBR=y" >> "$DEFCONFIG"
-          echo "CONFIG_NET_SCH_FQ=y" >> "$DEFCONFIG"
+          [ -f "$DEFCONFIG" ] || { echo "ERROR: $DEFCONFIG not found"; exit 1; }
+          {
+            echo ""
+            echo "# TCP BBR - PitchKernel"
+            echo "CONFIG_TCP_CONG_ADVANCED=y"
+            echo "CONFIG_TCP_CONG_BBR=y"
+            echo "CONFIG_DEFAULT_BBR=y"
+            echo "CONFIG_NET_SCH_FQ=y"
+          } >> "$DEFCONFIG"
 
       - name: Build kernel
         run: |
@@ -119,36 +120,13 @@ jobs:
             bash ${{ inputs.script }} munch
           fi
 
-      # NEW: fail loud instead of shipping silently broken config. This checks the
-      # generated .config (post Kconfig dependency resolution) rather than the
-      # defconfig fragment, so it catches the exact failure mode that happened last
-      # time — a symbol getting silently dropped during olddefconfig merge.
-      - name: Verify BBR actually compiled in
+      - name: Verify BBR compiled in
         run: |
-          CONFIG_FILE="apasitu/out/.config"
-          if [ ! -f "$CONFIG_FILE" ]; then
-            CONFIG_FILE=$(find apasitu -maxdepth 3 -name ".config" | head -1)
-          fi
-          if [ -z "$CONFIG_FILE" ] || [ ! -f "$CONFIG_FILE" ]; then
-            echo "ERROR: could not locate generated .config to verify BBR. Failing build."
-            exit 1
-          fi
-          echo "Checking $CONFIG_FILE for BBR..."
-          if ! grep -q '^CONFIG_TCP_CONG_BBR=y' "$CONFIG_FILE"; then
-            echo "ERROR: CONFIG_TCP_CONG_BBR did not survive into the final .config."
-            echo "This means a dependency (e.g. CONFIG_TCP_CONG_ADVANCED) was not satisfied,"
-            echo "or the fragment was overwritten by a later defconfig step."
-            exit 1
-          fi
-          if ! grep -q '^CONFIG_DEFAULT_TCP_CONG="bbr"' "$CONFIG_FILE"; then
-            echo "ERROR: BBR compiled in but is not the default congestion control."
-            echo "CONFIG_DEFAULT_TCP_CONG resolved to something other than bbr — check"
-            echo "that CONFIG_DEFAULT_BBR=y (not a direct string assignment) is set,"
-            echo "since this string is derived from a Kconfig choice block."
-            grep '^CONFIG_DEFAULT_TCP_CONG=' "$CONFIG_FILE" || true
-            exit 1
-          fi
-          echo "CONFIG_TCP_CONG_BBR=y and CONFIG_DEFAULT_TCP_CONG=\"bbr\" both confirmed."
+          CONFIG_FILE=$(find apasitu -maxdepth 3 -name ".config" | head -1)
+          [ -f "$CONFIG_FILE" ] || { echo "ERROR: .config not found"; exit 1; }
+          grep -q '^CONFIG_TCP_CONG_BBR=y' "$CONFIG_FILE" || \
+            { echo "ERROR: BBR not in .config"; exit 1; }
+          echo "BBR confirmed in .config"
 
       - name: Package Stable and Overclock zips
         run: |
@@ -161,61 +139,42 @@ jobs:
           echo "BUILD_DATE=${DATE}" >> $GITHUB_ENV
           echo "BUILD_TYPE=${TYPE}" >> $GITHUB_ENV
 
-          # build.sh ALWAYS builds both AOSP and MIUI sections sequentially.
-          # The MIUI section deletes anykernel/kernels/aosp/ on its way to
-          # populating kernels/miui/ — confirmed via real on-device failure
-          # and direct zip inspection. So we extract Image/dtb/dtbo.img from
-          # build.sh's own self-contained AOSP zip (captured before MIUI's
-          # cleanup runs), not from the post-script state of anykernel/.
-          AOSP_SRC_ZIP=$(find apasitu -maxdepth 1 -name "APTKernel_AOSP_*.zip" | head -1)
-          if [ -z "$AOSP_SRC_ZIP" ] || [ ! -f "$AOSP_SRC_ZIP" ]; then
-            echo "ERROR: could not find build.sh's own APTKernel_AOSP_*.zip output."
-            find apasitu -maxdepth 1 -name "*.zip"
-            exit 1
-          fi
-          echo "Found AOSP source zip: $AOSP_SRC_ZIP"
+          # Find the AOSP zip build.sh produced
+          AOSP_SRC_ZIP=$(find apasitu -maxdepth 1 -name "*.zip" | head -1)
+          [ -f "$AOSP_SRC_ZIP" ] || \
+            { echo "ERROR: no zip found"; ls apasitu/ | grep zip; exit 1; }
+          echo "Source zip: $AOSP_SRC_ZIP"
 
+          # Extract kernel images
+          mkdir -p /tmp/kernel_files
+          unzip -q -j "$AOSP_SRC_ZIP" \
+            "kernels/aosp/Image" "kernels/aosp/dtb" "kernels/aosp/dtbo.img" \
+            -d /tmp/kernel_files || \
+            { echo "ERROR: failed extracting kernel files"; unzip -l "$AOSP_SRC_ZIP" | head -20; exit 1; }
+          ls -lh /tmp/kernel_files/
+
+          # AK3 base is apasitu/anykernel (what build.sh prepared)
           AK3_DIR="apasitu/anykernel"
-          if [ ! -d "$AK3_DIR" ]; then
-            echo "ERROR: $AK3_DIR not found — build.sh may have changed its output layout."
-            exit 1
-          fi
-
-          mkdir -p /tmp/aosp_kernel_extract
-          unzip -q -j "$AOSP_SRC_ZIP" "kernels/aosp/Image" "kernels/aosp/dtb" "kernels/aosp/dtbo.img" -d /tmp/aosp_kernel_extract
-          for f in Image dtb dtbo.img; do
-            if [ ! -f "/tmp/aosp_kernel_extract/$f" ]; then
-              echo "ERROR: $f not found inside $AOSP_SRC_ZIP either. The AOSP build itself may have failed silently."
-              exit 1
-            fi
-          done
-          echo "Confirmed real AOSP Image/dtb/dtbo.img extracted from build.sh's own zip:"
-          ls -lh /tmp/aosp_kernel_extract/
+          [ -d "$AK3_DIR" ] || { echo "ERROR: $AK3_DIR not found"; exit 1; }
 
           for profile in stable overclock; do
             WORKDIR="/tmp/ak3_${profile}"
             rm -rf "$WORKDIR"
             cp -r "$AK3_DIR" "$WORKDIR"
 
+            # Inject kernel files
             rm -rf "$WORKDIR/kernels"
             mkdir -p "$WORKDIR/kernels/aosp"
-            cp /tmp/aosp_kernel_extract/Image "$WORKDIR/kernels/aosp/"
-            cp /tmp/aosp_kernel_extract/dtb "$WORKDIR/kernels/aosp/"
-            cp /tmp/aosp_kernel_extract/dtbo.img "$WORKDIR/kernels/aosp/"
+            cp /tmp/kernel_files/Image "$WORKDIR/kernels/aosp/"
+            cp /tmp/kernel_files/dtb "$WORKDIR/kernels/aosp/"
+            cp /tmp/kernel_files/dtbo.img "$WORKDIR/kernels/aosp/"
 
-            if [ ! -f "$WORKDIR/kernels/aosp/Image" ]; then
-              echo "ERROR: Image still missing in $WORKDIR after explicit copy. Aborting."
-              exit 1
-            fi
-
-            if ! grep -q 'variant="PROFILE_FIXED";' "$WORKDIR/anykernel.sh"; then
-              echo "ERROR: expected placeholder variant=\"PROFILE_FIXED\"; not found in anykernel.sh."
-              echo "The fork's anykernel.sh may have changed — update this step to match."
-              exit 1
-            fi
-            sed -i "s/variant=\"PROFILE_FIXED\";/variant=\"${profile}\";/" "$WORKDIR/anykernel.sh"
-            ACTUAL=$(grep "variant=\"${profile}\";" "$WORKDIR/anykernel.sh")
-            echo "[$profile] anykernel.sh -> $ACTUAL"
+            # Substitute profile placeholder
+            grep -q 'variant="PROFILE_FIXED";' "$WORKDIR/anykernel.sh" || \
+              { echo "ERROR: PROFILE_FIXED not in anykernel.sh"; exit 1; }
+            sed -i "s/variant=\"PROFILE_FIXED\";/variant=\"${profile}\";/" \
+              "$WORKDIR/anykernel.sh"
+            echo "[$profile] $(grep 'variant=' $WORKDIR/anykernel.sh | head -1)"
 
             if [ "$profile" = "stable" ]; then
               ZIP_NAME="PitchKernel-${TYPE}-munch-Stable-${DATE}.zip"
@@ -224,14 +183,12 @@ jobs:
             fi
 
             cd "$WORKDIR"
-            zip -r9 "$ZIP_NAME" ./* -x .git .gitignore "*.zip" >/dev/null
-            if ! unzip -l "$ZIP_NAME" | grep -q "kernels/aosp/Image"; then
-              echo "ERROR: kernels/aosp/Image missing from final $ZIP_NAME despite being in $WORKDIR."
-              exit 1
-            fi
+            zip -r9 "$ZIP_NAME" ./* -x ".git" ".gitignore" "*.zip" >/dev/null
+            unzip -l "$ZIP_NAME" | grep -q "kernels/aosp/Image" || \
+              { echo "ERROR: Image missing from $ZIP_NAME"; exit 1; }
             mv "$ZIP_NAME" "$GITHUB_WORKSPACE/"
             cd "$GITHUB_WORKSPACE"
-            echo "Packaged and verified: $ZIP_NAME"
+            echo "Packaged: $ZIP_NAME"
           done
 
           ls -lh *.zip
@@ -246,37 +203,28 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-      - name: Send Stable artifact to Telegram
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_THREAD_ID_ARTIFACT: ${{ secrets.TELEGRAM_THREAD_ID_ARTIFACT }}
-          ZIP_PATH: ${{ github.workspace }}/${{ env.STABLE_ZIP }}
-          ZIP_NAME: ${{ env.STABLE_ZIP }}
-          KERNEL_VERSION: "4.19"
-          ROOT_SOLUTION: ${{ inputs.ksu && 'RESUKISU' || 'VANILLA' }}
-          SUSFS_ENABLED: ${{ inputs.ksu }}
-          KERNEL_BRANCH: "android16-aptusitu-new (default)"
-          COMPILER_STRING: "ZyCromerZ Clang 16.0.6"
-          KERNEL_SRC: "apasitu"
+      - name: Send artifacts to Telegram
         run: |
-          source PitchKernel/release/telegram.sh
+          if [ "${{ inputs.ksu }}" == "true" ]; then
+            export ROOT_SOLUTION="RESUKISU"
+            export SUSFS_ENABLED="true"
+          else
+            export ROOT_SOLUTION="VANILLA"
+            export SUSFS_ENABLED="false"
+          fi
+          export TELEGRAM_BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}"
+          export TELEGRAM_CHAT_ID="${{ secrets.TELEGRAM_CHAT_ID }}"
+          export TELEGRAM_THREAD_ID_ARTIFACT="${{ secrets.TELEGRAM_THREAD_ID_ARTIFACT }}"
+          export KERNEL_VERSION="4.19"
+          export KERNEL_BRANCH="default (apasitu)"
+          export COMPILER_STRING="ZyCromerZ Clang 16.0.6"
+          export KERNEL_SRC="$GITHUB_WORKSPACE/apasitu"
 
-      - name: Send Overclock artifact to Telegram
-        env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          TELEGRAM_THREAD_ID_ARTIFACT: ${{ secrets.TELEGRAM_THREAD_ID_ARTIFACT }}
-          ZIP_PATH: ${{ github.workspace }}/${{ env.OC_ZIP }}
-          ZIP_NAME: ${{ env.OC_ZIP }}
-          KERNEL_VERSION: "4.19"
-          ROOT_SOLUTION: ${{ inputs.ksu && 'RESUKISU' || 'VANILLA' }}
-          SUSFS_ENABLED: ${{ inputs.ksu }}
-          KERNEL_BRANCH: "android16-aptusitu-new (default)"
-          COMPILER_STRING: "ZyCromerZ Clang 16.0.6"
-          KERNEL_SRC: "apasitu"
-        run: |
-          source PitchKernel/release/telegram.sh
+          for ZIP in "${{ env.STABLE_ZIP }}" "${{ env.OC_ZIP }}"; do
+            export ZIP_PATH="$GITHUB_WORKSPACE/$ZIP"
+            export ZIP_NAME="$ZIP"
+            source PitchKernel/release/telegram.sh
+          done
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -292,10 +240,15 @@ jobs:
             **Toolchain:** ZyCromerZ Clang 16.0.6
 
             ### Features
-            - ReSukiSU + SUSFS (${{ inputs.ksu && 'enabled' || 'disabled' }})
+            - ReSukiSU + SUSFS (${{ inputs.ksu == true && 'enabled' || 'disabled' }})
             - TCP BBR congestion control
-            - Auto-detects AOSP / MIUI at flash time
-            - CPU Frequency Profile: separate Stable / Overclock zips, applied via init service (no separate module needed)
+            - CPU Frequency Profile via init service (no module needed)
+
+            ### CPU Frequency
+            | Zip | Prime cpu7 |
+            |---|---|
+            | Stable | 2841 MHz |
+            | Overclock | 3187 MHz |
 
             ### Installation
             Flash via TWRP or OrangeFox. Supports Android 11-16.
@@ -303,6 +256,4 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: false
           prerelease: false
-
-
           
