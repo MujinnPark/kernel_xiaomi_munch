@@ -67,14 +67,34 @@ jobs:
             apasitu
           ls apasitu/build.sh apasitu/build-miui.sh
 
+      # FIXED (verified by actually running `make munch_defconfig` against this
+      # source, not just read): two separate bugs existed.
+      #   1. Previous version patched arch/arm64/configs/vendor/xiaomi/munch.config,
+      #      a fragment never read by build.sh/build-miui.sh. Both run
+      #      `make ${TARGET_DEVICE}_defconfig` -> arch/arm64/configs/munch_defconfig.
+      #      That file had zero CONFIG_TCP_CONG_* entries, so BBR never compiled in.
+      #   2. CONFIG_DEFAULT_TCP_CONG="bbr" as a direct string assignment does NOT
+      #      work in this Kconfig tree (net/ipv4/Kconfig) — it's a derived string
+      #      driven by a `choice` block. Setting the string directly gets silently
+      #      overwritten by Kconfig's `default "cubic"` fallback. The actual symbol
+      #      that must be set is CONFIG_DEFAULT_BBR=y, confirmed by running
+      #      `make munch_defconfig` locally and inspecting the resolved .config:
+      #      with only the string set, .config showed CONFIG_DEFAULT_TCP_CONG="cubic"
+      #      despite BBR being compiled in (available but not default). Adding
+      #      CONFIG_DEFAULT_BBR=y resolves CONFIG_DEFAULT_TCP_CONG="bbr" correctly.
       - name: Enable TCP BBR for munch
         run: |
-          FRAG="apasitu/arch/arm64/configs/vendor/xiaomi/munch.config"
-          echo "" >> "$FRAG"
-          echo "# TCP BBR - PitchKernel" >> "$FRAG"
-          echo "CONFIG_TCP_CONG_BBR=y" >> "$FRAG"
-          echo "CONFIG_NET_SCH_FQ=y" >> "$FRAG"
-          echo "CONFIG_DEFAULT_TCP_CONG=\"bbr\"" >> "$FRAG"
+          DEFCONFIG="apasitu/arch/arm64/configs/munch_defconfig"
+          if [ ! -f "$DEFCONFIG" ]; then
+            echo "ERROR: $DEFCONFIG not found. Upstream layout changed — update this step."
+            exit 1
+          fi
+          echo "" >> "$DEFCONFIG"
+          echo "# TCP BBR - PitchKernel" >> "$DEFCONFIG"
+          echo "CONFIG_TCP_CONG_ADVANCED=y" >> "$DEFCONFIG"
+          echo "CONFIG_TCP_CONG_BBR=y" >> "$DEFCONFIG"
+          echo "CONFIG_DEFAULT_BBR=y" >> "$DEFCONFIG"
+          echo "CONFIG_NET_SCH_FQ=y" >> "$DEFCONFIG"
 
       - name: Build kernel
         run: |
@@ -85,6 +105,37 @@ jobs:
           else
             bash ${{ inputs.script }} munch
           fi
+
+      # NEW: fail loud instead of shipping silently broken config. This checks the
+      # generated .config (post Kconfig dependency resolution) rather than the
+      # defconfig fragment, so it catches the exact failure mode that happened last
+      # time — a symbol getting silently dropped during olddefconfig merge.
+      - name: Verify BBR actually compiled in
+        run: |
+          CONFIG_FILE="apasitu/out/.config"
+          if [ ! -f "$CONFIG_FILE" ]; then
+            CONFIG_FILE=$(find apasitu -maxdepth 3 -name ".config" | head -1)
+          fi
+          if [ -z "$CONFIG_FILE" ] || [ ! -f "$CONFIG_FILE" ]; then
+            echo "ERROR: could not locate generated .config to verify BBR. Failing build."
+            exit 1
+          fi
+          echo "Checking $CONFIG_FILE for BBR..."
+          if ! grep -q '^CONFIG_TCP_CONG_BBR=y' "$CONFIG_FILE"; then
+            echo "ERROR: CONFIG_TCP_CONG_BBR did not survive into the final .config."
+            echo "This means a dependency (e.g. CONFIG_TCP_CONG_ADVANCED) was not satisfied,"
+            echo "or the fragment was overwritten by a later defconfig step."
+            exit 1
+          fi
+          if ! grep -q '^CONFIG_DEFAULT_TCP_CONG="bbr"' "$CONFIG_FILE"; then
+            echo "ERROR: BBR compiled in but is not the default congestion control."
+            echo "CONFIG_DEFAULT_TCP_CONG resolved to something other than bbr — check"
+            echo "that CONFIG_DEFAULT_BBR=y (not a direct string assignment) is set,"
+            echo "since this string is derived from a Kconfig choice block."
+            grep '^CONFIG_DEFAULT_TCP_CONG=' "$CONFIG_FILE" || true
+            exit 1
+          fi
+          echo "CONFIG_TCP_CONG_BBR=y and CONFIG_DEFAULT_TCP_CONG=\"bbr\" both confirmed."
 
       - name: Rename zip to PitchKernel
         run: |
