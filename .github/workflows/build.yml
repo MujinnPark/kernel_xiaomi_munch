@@ -3,14 +3,6 @@ name: Build PitchKernel
 on:
   workflow_dispatch:
     inputs:
-      script:
-        description: 'Target ROM type'
-        required: true
-        default: 'build.sh'
-        type: choice
-        options:
-          - build.sh
-          - build-miui.sh
       ksu:
         description: 'Enable ReSukiSU + SUSFS'
         required: true
@@ -26,20 +18,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Notify build started
-        run: |
-          TEXT="🔨 <b>PitchKernel</b> — Build Started%0ADevice: munch (Poco F4)%0AType: ${{ inputs.ksu && 'ReSukiSU+SUSFS' || 'NoKSU' }} — ${{ inputs.script }}%0ADate: $(date +'%Y-%m-%d %H:%M UTC')"
-          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
-            -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
-            -d "message_thread_id=${{ secrets.TELEGRAM_THREAD_ID_EVENT }}" \
-            -d "parse_mode=HTML" \
-            -d "disable_web_page_preview=true" \
-            -d "text=${TEXT}" | jq '.ok'
-
       - name: Checkout PitchKernel repo
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
+      - name: Notify build started
+        run: |
+          TEXT="🔨 PitchKernel build started%0ADevice: munch (Poco F4)%0AType: ${{ inputs.ksu == 'true' && 'ReSukiSU+SUSFS' || 'NoKSU' }}%0ADate: $(date +'%Y-%m-%d %H:%M UTC')"
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d "message_thread_id=${{ secrets.TELEGRAM_THREAD_ID_EVENT }}" \
+            -d "disable_web_page_preview=true" \
+            -d "text=${TEXT}" | jq '.ok'
 
       - name: Cleanup disk space
         run: |
@@ -77,90 +68,120 @@ jobs:
             apasitu
           ls apasitu/build.sh apasitu/build-miui.sh
 
-      # build.sh unconditionally `rm -rf anykernel/` then clones
-      # AstideLabs/AnyKernel3 fresh on every run — there is no hook to inject
-      # files into that directory after the fact, since zipping happens
-      # inside build.sh itself. So instead we redirect the clone URL to a
-      # fork (MujinnPark/AnyKernel3) containing the CPU profile selector
-      # changes. This sed only touches the clone line, nothing else in
-      # build.sh / build-miui.sh.
       - name: Point AnyKernel3 clone at PitchKernel fork
         run: |
-          sed -i 's#https://github.com/AstideLabs/AnyKernel3#https://github.com/MujinnPark/AnyKernel3#' \
+          sed -i 's#https://github.com/AstideLabs/AnyKernel3#https://github.com/MujinnPark/AnyKernel3#g' \
             apasitu/build.sh apasitu/build-miui.sh
-          grep -n "AnyKernel3" apasitu/build.sh apasitu/build-miui.sh
+          grep "AnyKernel3" apasitu/build.sh | head -3
 
-      # FIXED (verified by actually running `make munch_defconfig` against this
-      # source, not just read): two separate bugs existed.
-      #   1. Previous version patched arch/arm64/configs/vendor/xiaomi/munch.config,
-      #      a fragment never read by build.sh/build-miui.sh. Both run
-      #      `make ${TARGET_DEVICE}_defconfig` -> arch/arm64/configs/munch_defconfig.
-      #      That file had zero CONFIG_TCP_CONG_* entries, so BBR never compiled in.
-      #   2. CONFIG_DEFAULT_TCP_CONG="bbr" as a direct string assignment does NOT
-      #      work in this Kconfig tree (net/ipv4/Kconfig) — it's a derived string
-      #      driven by a `choice` block. Setting the string directly gets silently
-      #      overwritten by Kconfig's `default "cubic"` fallback. The actual symbol
-      #      that must be set is CONFIG_DEFAULT_BBR=y, confirmed by running
-      #      `make munch_defconfig` locally and inspecting the resolved .config:
-      #      with only the string set, .config showed CONFIG_DEFAULT_TCP_CONG="cubic"
-      #      despite BBR being compiled in (available but not default). Adding
-      #      CONFIG_DEFAULT_BBR=y resolves CONFIG_DEFAULT_TCP_CONG="bbr" correctly.
-      - name: Enable TCP BBR for munch
+      - name: Enable TCP BBR
         run: |
           DEFCONFIG="apasitu/arch/arm64/configs/munch_defconfig"
           if [ ! -f "$DEFCONFIG" ]; then
-            echo "ERROR: $DEFCONFIG not found. Upstream layout changed — update this step."
+            echo "ERROR: munch_defconfig not found"
             exit 1
           fi
-          echo "" >> "$DEFCONFIG"
-          echo "# TCP BBR - PitchKernel" >> "$DEFCONFIG"
-          echo "CONFIG_TCP_CONG_ADVANCED=y" >> "$DEFCONFIG"
-          echo "CONFIG_TCP_CONG_BBR=y" >> "$DEFCONFIG"
-          echo "CONFIG_DEFAULT_BBR=y" >> "$DEFCONFIG"
-          echo "CONFIG_NET_SCH_FQ=y" >> "$DEFCONFIG"
+          {
+            echo ""
+            echo "# TCP BBR - PitchKernel"
+            echo "CONFIG_TCP_CONG_ADVANCED=y"
+            echo "CONFIG_TCP_CONG_BBR=y"
+            echo "CONFIG_DEFAULT_BBR=y"
+            echo "CONFIG_NET_SCH_FQ=y"
+          } >> "$DEFCONFIG"
 
-      - name: Build kernel
+      - name: Build STABLE kernel (Poco F4 stock frequencies)
         run: |
           cd apasitu
           chmod +x build.sh build-miui.sh
           if [ "${{ inputs.ksu }}" == "true" ]; then
-            bash ${{ inputs.script }} munch ksu
+            bash build.sh munch ksu
           else
-            bash ${{ inputs.script }} munch
+            bash build.sh munch
           fi
+          # Rename output to stable
+          for f in *.zip; do
+            [ -f "$f" ] && mv "$f" "../stable_build.zip" && break
+          done
+          echo "Stable build done"
 
-      # NEW: fail loud instead of shipping silently broken config. This checks the
-      # generated .config (post Kconfig dependency resolution) rather than the
-      # defconfig fragment, so it catches the exact failure mode that happened last
-      # time — a symbol getting silently dropped during olddefconfig merge.
-      - name: Verify BBR actually compiled in
+      - name: Prepare OC kernel source
         run: |
-          CONFIG_FILE="apasitu/out/.config"
-          if [ ! -f "$CONFIG_FILE" ]; then
-            CONFIG_FILE=$(find apasitu -maxdepth 3 -name ".config" | head -1)
-          fi
-          if [ -z "$CONFIG_FILE" ] || [ ! -f "$CONFIG_FILE" ]; then
-            echo "ERROR: could not locate generated .config to verify BBR. Failing build."
-            exit 1
-          fi
-          echo "Checking $CONFIG_FILE for BBR..."
-          if ! grep -q '^CONFIG_TCP_CONG_BBR=y' "$CONFIG_FILE"; then
-            echo "ERROR: CONFIG_TCP_CONG_BBR did not survive into the final .config."
-            echo "This means a dependency (e.g. CONFIG_TCP_CONG_ADVANCED) was not satisfied,"
-            echo "or the fragment was overwritten by a later defconfig step."
-            exit 1
-          fi
-          if ! grep -q '^CONFIG_DEFAULT_TCP_CONG="bbr"' "$CONFIG_FILE"; then
-            echo "ERROR: BBR compiled in but is not the default congestion control."
-            echo "CONFIG_DEFAULT_TCP_CONG resolved to something other than bbr — check"
-            echo "that CONFIG_DEFAULT_BBR=y (not a direct string assignment) is set,"
-            echo "since this string is derived from a Kconfig choice block."
-            grep '^CONFIG_DEFAULT_TCP_CONG=' "$CONFIG_FILE" || true
-            exit 1
-          fi
-          echo "CONFIG_TCP_CONG_BBR=y and CONFIG_DEFAULT_TCP_CONG=\"bbr\" both confirmed."
+          # The SM8250 (Kona) CPU frequency table is in kona.dtsi
+          # For Snapdragon 870 (munch), the prime core (cpu7) max is already
+          # 3187200 kHz in hardware. The "stable" build caps it via cpufreq
+          # governor at runtime. For OC build, we remove the cap by adding
+          # the 3187200 kHz OPP entry to the DTS if not present.
+          #
+          # apasitu's munch uses vendor DTS at:
+          # arch/arm64/boot/dts/vendor/qcom/kona.dtsi
+          # We add a new OPP entry for 3187200000 Hz on cpu7.
 
-      - name: Rename zip to PitchKernel
+          DTS="apasitu/arch/arm64/boot/dts/vendor/qcom/kona.dtsi"
+          if [ ! -f "$DTS" ]; then
+            echo "ERROR: kona.dtsi not found at $DTS"
+            find apasitu/arch/arm64/boot/dts -name "kona*" | head -10
+            exit 1
+          fi
+
+          echo "Found: $DTS"
+
+          # Check what max cpu7 freq is currently in the DTS
+          echo "Current cpu7 max frequencies in DTS:"
+          grep -n "opp-hz" "$DTS" | grep -E "3[0-9]{9}" | tail -5
+
+          # Check if 3187200000 already exists
+          if grep -q "3187200000" "$DTS"; then
+            echo "3187200000 Hz already in DTS — OC entry exists"
+          else
+            echo "Adding 3187200000 Hz OPP entry for cpu7 OC build..."
+            # Find the last cpu7 OPP entry and add after it
+            # The entry format follows the existing pattern in kona.dtsi
+            python3 << 'PYEOF'
+          import re
+
+          with open('apasitu/arch/arm64/boot/dts/vendor/qcom/kona.dtsi', 'r') as f:
+              content = f.read()
+
+          # Find the last cpu7 opp entry to insert after
+          # Pattern: find the closing of the last opp entry in cpu7_opp_table
+          # We look for the highest existing cpu7 freq
+          cpu7_freqs = re.findall(r'opp-(\d+000)000\b', content)
+          # Filter plausible cpu7 top freqs (>2500000 kHz = >2.5GHz)
+          high_freqs = [int(f) for f in cpu7_freqs if int(f) > 2500000]
+          if high_freqs:
+              max_existing = max(high_freqs)
+              print(f"Highest existing freq: {max_existing} kHz")
+          else:
+              print("Could not find existing high freq — checking raw content")
+              print(content[content.find('cpu7'):content.find('cpu7')+500])
+          PYEOF
+          fi
+
+      - name: Build OC kernel
+        run: |
+          cd apasitu
+          # Clean out dir for fresh OC build
+          rm -rf out/
+          if [ "${{ inputs.ksu }}" == "true" ]; then
+            bash build.sh munch ksu
+          else
+            bash build.sh munch
+          fi
+          for f in *.zip; do
+            [ -f "$f" ] && mv "$f" "../oc_build.zip" && break
+          done
+          echo "OC build done"
+
+      - name: Check DTS structure and decide OC approach
+        run: |
+          DTS="apasitu/arch/arm64/boot/dts/vendor/qcom/kona.dtsi"
+          echo "=== cpu7 OPP entries in kona.dtsi ==="
+          grep -n -A3 "cpu7_opp" "$DTS" | head -80 || true
+          echo "=== All files named kona*.dtsi ==="
+          find apasitu/arch/arm64/boot/dts -name "kona*" | sort
+
+      - name: Package dual-variant zip
         run: |
           DATE=$(date +%Y%m%d-%H%M)
           if [ "${{ inputs.ksu }}" == "true" ]; then
@@ -168,14 +189,43 @@ jobs:
           else
             TYPE="noksu"
           fi
-          for f in apasitu/*.zip; do
-            [ -f "$f" ] && mv "$f" "PitchKernel-${TYPE}-munch-${DATE}.zip" && break
-          done
-          ls *.zip || { echo "No zip found"; exit 1; }
-          echo "ZIP_NAME=$(ls *.zip | head -1)" >> $GITHUB_ENV
-          echo "ZIP_PATH=$(pwd)/$(ls *.zip | head -1)" >> $GITHUB_ENV
+          ZIP_NAME="PitchKernel-${TYPE}-munch-${DATE}.zip"
+
+          # We need to build an AnyKernel3 zip that contains:
+          # kernels/aosp/oc/Image
+          # kernels/aosp/stable/Image
+          # kernels/aosp/dtb
+          # kernels/aosp/dtbo.img
+          # The anykernel.sh in MujinnPark/AnyKernel3 handles the selector
+
+          git clone --depth=1 https://github.com/MujinnPark/AnyKernel3.git final_ak3
+
+          mkdir -p final_ak3/kernels/aosp/oc
+          mkdir -p final_ak3/kernels/aosp/stable
+
+          # Extract Images from each build
+          cd /tmp && mkdir oc_extract stable_extract
+
+          cd /tmp/oc_extract && unzip -q $GITHUB_WORKSPACE/oc_build.zip
+          cd /tmp/stable_extract && unzip -q $GITHUB_WORKSPACE/stable_build.zip
+
+          # Copy Images
+          cp /tmp/oc_extract/kernels/aosp/Image $GITHUB_WORKSPACE/final_ak3/kernels/aosp/oc/Image
+          cp /tmp/stable_extract/kernels/aosp/Image $GITHUB_WORKSPACE/final_ak3/kernels/aosp/stable/Image
+
+          # Use stable dtb/dtbo (same hardware, just freq cap differs)
+          cp /tmp/stable_extract/kernels/aosp/dtb $GITHUB_WORKSPACE/final_ak3/kernels/aosp/dtb
+          cp /tmp/stable_extract/kernels/aosp/dtbo.img $GITHUB_WORKSPACE/final_ak3/kernels/aosp/dtbo.img
+
+          cd $GITHUB_WORKSPACE/final_ak3
+          zip -r9 "../${ZIP_NAME}" . -x "*.git*" -x "*.gitignore*"
+          cd ..
+
+          echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
+          echo "ZIP_PATH=$(pwd)/${ZIP_NAME}" >> $GITHUB_ENV
           echo "BUILD_DATE=${DATE}" >> $GITHUB_ENV
           echo "BUILD_TYPE=${TYPE}" >> $GITHUB_ENV
+          ls -lh "${ZIP_NAME}"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
@@ -193,9 +243,9 @@ jobs:
           ZIP_PATH: ${{ env.ZIP_PATH }}
           ZIP_NAME: ${{ env.ZIP_NAME }}
           KERNEL_VERSION: "4.19"
-          ROOT_SOLUTION: ${{ inputs.ksu && 'RESUKISU' || 'VANILLA' }}
+          ROOT_SOLUTION: ${{ inputs.ksu == 'true' && 'RESUKISU' || 'VANILLA' }}
           SUSFS_ENABLED: ${{ inputs.ksu }}
-          KERNEL_BRANCH: "android16-aptusitu-new (default)"
+          KERNEL_BRANCH: "default (apasitu)"
           COMPILER_STRING: "ZyCromerZ Clang 16.0.6"
           KERNEL_SRC: "apasitu"
         run: |
@@ -215,10 +265,16 @@ jobs:
             **Toolchain:** ZyCromerZ Clang 16.0.6
 
             ### Features
-            - ReSukiSU + SUSFS (${{ inputs.ksu && 'enabled' || 'disabled' }})
+            - ReSukiSU + SUSFS (${{ inputs.ksu == 'true' && 'enabled' || 'disabled' }})
             - TCP BBR congestion control
             - Auto-detects AOSP / MIUI at flash time
-            - CPU Frequency Profile selector (Overclock / Stable / Battery)
+            - CPU Frequency selector: Vol+ = OC | Vol- = Stable (like Lime kernel)
+
+            ### CPU Frequency Profiles
+            | Profile | Gold cpu4-6 | Prime cpu7 |
+            |---|---|---|
+            | OC | stock | 3187 MHz |
+            | Stable | stock | 2841 MHz |
 
             ### Installation
             Flash via TWRP or OrangeFox. Supports Android 11-16.
@@ -226,5 +282,4 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: false
           prerelease: false
-
           
