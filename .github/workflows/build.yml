@@ -67,6 +67,19 @@ jobs:
             apasitu
           ls apasitu/build.sh apasitu/build-miui.sh
 
+      # build.sh unconditionally `rm -rf anykernel/` then clones
+      # AstideLabs/AnyKernel3 fresh on every run — there is no hook to inject
+      # files into that directory after the fact, since zipping happens
+      # inside build.sh itself. So instead we redirect the clone URL to a
+      # fork (MujinnPark/AnyKernel3) containing the CPU profile selector
+      # changes. This sed only touches the clone line, nothing else in
+      # build.sh / build-miui.sh.
+      - name: Point AnyKernel3 clone at PitchKernel fork
+        run: |
+          sed -i 's#https://github.com/AstideLabs/AnyKernel3#https://github.com/MujinnPark/AnyKernel3#' \
+            apasitu/build.sh apasitu/build-miui.sh
+          grep -n "AnyKernel3" apasitu/build.sh apasitu/build-miui.sh
+
       # FIXED (verified by actually running `make munch_defconfig` against this
       # source, not just read): two separate bugs existed.
       #   1. Previous version patched arch/arm64/configs/vendor/xiaomi/munch.config,
@@ -176,7 +189,7 @@ jobs:
           COMPILER_STRING: "ZyCromerZ Clang 16.0.6"
           KERNEL_SRC: "apasitu"
         run: |
-          source luminaire/release/telegram.sh
+          source PitchKernel/release/telegram.sh
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
