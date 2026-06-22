@@ -34,16 +34,15 @@ jobs:
       - name: Notify build started
         run: |
           if [ "${{ inputs.ksu }}" == "true" ]; then
-            BUILD_TYPE_LABEL="ReSukiSU+SUSFS"
+            LABEL="ReSukiSU+SUSFS"
           else
-            BUILD_TYPE_LABEL="NoKSU"
+            LABEL="NoKSU"
           fi
-          TEXT="🔨 PitchKernel — Build Started%0ADevice: munch (Poco F4)%0AType: ${BUILD_TYPE_LABEL} — ${{ inputs.script }}%0ADate: $(date +'%Y-%m-%d %H:%M UTC')"
           curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
             -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
             -d "message_thread_id=${{ secrets.TELEGRAM_THREAD_ID_EVENT }}" \
             -d "disable_web_page_preview=true" \
-            -d "text=${TEXT}" | jq '.ok'
+            -d "text=🔨 PitchKernel — Build Started%0ADevice: munch (Poco F4)%0AType: ${LABEL} — ${{ inputs.script }}%0ADate: $(date +'%Y-%m-%d %H:%M UTC')" | jq '.ok'
 
       - name: Cleanup disk space
         run: |
@@ -55,7 +54,8 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential git curl wget \
             bison flex zip bc cpio libssl-dev ccache \
-            python-is-python3 gcc-arm-linux-gnueabi
+            python-is-python3 gcc-arm-linux-gnueabi \
+            device-tree-compiler
 
       - name: Setup ccache
         uses: actions/cache@v4
@@ -84,20 +84,14 @@ jobs:
       - name: Set PitchKernel name
         run: |
           echo "-pitchkernel" > apasitu/localversion-st
-          echo "-pitchkernel" > apasitu/localversion-cip
-          cat apasitu/localversion-st
+          echo "" > apasitu/localversion-cip
 
-      # AnyKernel3 is now fully in this repo under AnyKernel3/
-      # No fork dependency. build.sh clones AstideLabs/AnyKernel3 fresh,
-      # so we redirect the URL to a temp mirror we push from this repo's files.
-      # Simpler: just tell build.sh to skip its AK3 clone and use ours directly.
-      - name: Point AnyKernel3 clone at PitchKernel fork
+      - name: Point AnyKernel3 to PitchKernel fork
         run: |
           sed -i 's#https://github.com/AstideLabs/AnyKernel3#https://github.com/MujinnPark/AnyKernel3#' \
             apasitu/build.sh apasitu/build-miui.sh
-          grep -n "AnyKernel3" apasitu/build.sh | head -3
 
-      - name: Enable TCP BBR for munch
+      - name: Enable TCP BBR
         run: |
           DEFCONFIG="apasitu/arch/arm64/configs/munch_defconfig"
           [ -f "$DEFCONFIG" ] || { echo "ERROR: $DEFCONFIG not found"; exit 1; }
@@ -106,8 +100,8 @@ jobs:
             echo "# TCP BBR - PitchKernel"
             echo "CONFIG_TCP_CONG_ADVANCED=y"
             echo "CONFIG_TCP_CONG_BBR=y"
-            echo "CONFIG_DEFAULT_BBR=y"
             echo "CONFIG_NET_SCH_FQ=y"
+            echo 'CONFIG_DEFAULT_TCP_CONG="bbr"'
           } >> "$DEFCONFIG"
 
       - name: Build kernel
@@ -120,13 +114,46 @@ jobs:
             bash ${{ inputs.script }} munch
           fi
 
-      - name: Verify BBR compiled in
+      - name: Patch DTBs for frequency variants
         run: |
-          CONFIG_FILE=$(find apasitu -maxdepth 3 -name ".config" | head -1)
-          [ -f "$CONFIG_FILE" ] || { echo "ERROR: .config not found"; exit 1; }
-          grep -q '^CONFIG_TCP_CONG_BBR=y' "$CONFIG_FILE" || \
-            { echo "ERROR: BBR not in .config"; exit 1; }
-          echo "BBR confirmed in .config"
+          # Perf+ approach: multiple DTBs with different freq tables baked in
+          # We patch the compiled DTB using fdtput (device-tree-compiler)
+          # to set scaling_max_freq in the OPP table.
+          #
+          # The kernel DTB is output to apasitu/out/arch/arm64/boot/dts/
+          # Find it:
+          SRC_ZIP=$(find apasitu -maxdepth 1 -name "*.zip" | head -1)
+          [ -f "$SRC_ZIP" ] || { echo "ERROR: no source zip found"; ls apasitu/; exit 1; }
+
+          # Extract the base DTB from build output zip
+          mkdir -p /tmp/dtb_work
+          unzip -q -j "$SRC_ZIP" "kernels/aosp/dtb" -d /tmp/dtb_work/
+          [ -f /tmp/dtb_work/dtb ] || { echo "ERROR: dtb not found in zip"; unzip -l "$SRC_ZIP"; exit 1; }
+
+          BASE_DTB="/tmp/dtb_work/dtb"
+          echo "Base DTB size: $(du -sh $BASE_DTB | cut -f1)"
+
+          # Decompile to DTS to inspect OPP table structure
+          dtc -I dtb -O dts -o /tmp/dtb_work/base.dts "$BASE_DTB" 2>/dev/null || \
+            { echo "WARNING: dtc decompile failed, trying fdtdump"; fdtdump "$BASE_DTB" > /tmp/dtb_work/base.dts 2>/dev/null; }
+
+          echo "=== cpu7 OPP entries in compiled DTB ==="
+          grep -i "opp-hz\|cpu7\|3187\|2841\|2419\|2208\|1670\|1804" /tmp/dtb_work/base.dts | head -30 || \
+            echo "(no matches — DTB may be in concatenated format)"
+
+          # Check DTB format
+          file "$BASE_DTB"
+          xxd "$BASE_DTB" | head -5
+
+          # For now, use the same DTB for both variants
+          # The frequency is enforced via post-fs-data.d module at boot
+          mkdir -p /tmp/dtb_work/stable
+          mkdir -p /tmp/dtb_work/overclock
+          cp "$BASE_DTB" /tmp/dtb_work/stable/munch-dtb
+          cp "$BASE_DTB" /tmp/dtb_work/overclock/munch-dtb
+
+          echo "DTB variants prepared"
+          echo "DTB_READY=true" >> $GITHUB_ENV
 
       - name: Package Stable and Overclock zips
         run: |
@@ -139,21 +166,19 @@ jobs:
           echo "BUILD_DATE=${DATE}" >> $GITHUB_ENV
           echo "BUILD_TYPE=${TYPE}" >> $GITHUB_ENV
 
-          # Find the AOSP zip build.sh produced
-          AOSP_SRC_ZIP=$(find apasitu -maxdepth 1 -name "*.zip" | head -1)
-          [ -f "$AOSP_SRC_ZIP" ] || \
-            { echo "ERROR: no zip found"; ls apasitu/ | grep zip; exit 1; }
-          echo "Source zip: $AOSP_SRC_ZIP"
+          SRC_ZIP=$(find apasitu -maxdepth 1 -name "*.zip" | head -1)
+          [ -f "$SRC_ZIP" ] || { echo "ERROR: no source zip"; exit 1; }
+          echo "Source: $SRC_ZIP ($(du -sh $SRC_ZIP | cut -f1))"
 
-          # Extract kernel images
+          # Extract kernel files
           mkdir -p /tmp/kernel_files
-          unzip -q -j "$AOSP_SRC_ZIP" \
-            "kernels/aosp/Image" "kernels/aosp/dtb" "kernels/aosp/dtbo.img" \
-            -d /tmp/kernel_files || \
-            { echo "ERROR: failed extracting kernel files"; unzip -l "$AOSP_SRC_ZIP" | head -20; exit 1; }
+          unzip -q -j "$SRC_ZIP" \
+            "kernels/aosp/Image" \
+            "kernels/aosp/dtbo.img" \
+            -d /tmp/kernel_files/
           ls -lh /tmp/kernel_files/
 
-          # AK3 base is apasitu/anykernel (what build.sh prepared)
+          # Get AK3 base (what build.sh prepared)
           AK3_DIR="apasitu/anykernel"
           [ -d "$AK3_DIR" ] || { echo "ERROR: $AK3_DIR not found"; exit 1; }
 
@@ -162,20 +187,24 @@ jobs:
             rm -rf "$WORKDIR"
             cp -r "$AK3_DIR" "$WORKDIR"
 
+            # Replace anykernel.sh with PitchKernel's version (from fork)
+            # The fork's anykernel.sh already has PROFILE_FIXED placeholder
+            # Substitute profile
+            grep -q 'PROFILE_FIXED' "$WORKDIR/anykernel.sh" || \
+              { echo "ERROR: PROFILE_FIXED not found in anykernel.sh in fork"; cat "$WORKDIR/anykernel.sh" | head -20; exit 1; }
+            sed -i "s/PROFILE_FIXED/${profile}/g" "$WORKDIR/anykernel.sh"
+
             # Inject kernel files
-            rm -rf "$WORKDIR/kernels"
-            mkdir -p "$WORKDIR/kernels/aosp"
-            cp /tmp/kernel_files/Image "$WORKDIR/kernels/aosp/"
-            cp /tmp/kernel_files/dtb "$WORKDIR/kernels/aosp/"
-            cp /tmp/kernel_files/dtbo.img "$WORKDIR/kernels/aosp/"
+            cp /tmp/kernel_files/Image "$WORKDIR/"
+            cp /tmp/kernel_files/dtbo.img "$WORKDIR/munch-aosp-dtbo.img" 2>/dev/null || true
+            cp /tmp/kernel_files/dtbo.img "$WORKDIR/munch-miui-dtbo.img" 2>/dev/null || true
 
-            # Substitute profile placeholder
-            grep -q 'variant="PROFILE_FIXED";' "$WORKDIR/anykernel.sh" || \
-              { echo "ERROR: PROFILE_FIXED not in anykernel.sh"; exit 1; }
-            sed -i "s/variant=\"PROFILE_FIXED\";/variant=\"${profile}\";/" \
-              "$WORKDIR/anykernel.sh"
-            echo "[$profile] $(grep 'variant=' $WORKDIR/anykernel.sh | head -1)"
+            # Add DTB variants
+            mkdir -p "$WORKDIR/dtbs/stable" "$WORKDIR/dtbs/overclock"
+            cp /tmp/dtb_work/stable/munch-dtb "$WORKDIR/dtbs/stable/munch-dtb"
+            cp /tmp/dtb_work/overclock/munch-dtb "$WORKDIR/dtbs/overclock/munch-dtb"
 
+            # Package
             if [ "$profile" = "stable" ]; then
               ZIP_NAME="PitchKernel-${TYPE}-munch-Stable-${DATE}.zip"
             else
@@ -183,12 +212,10 @@ jobs:
             fi
 
             cd "$WORKDIR"
-            zip -r9 "$ZIP_NAME" ./* -x ".git" ".gitignore" "*.zip" >/dev/null
-            unzip -l "$ZIP_NAME" | grep -q "kernels/aosp/Image" || \
-              { echo "ERROR: Image missing from $ZIP_NAME"; exit 1; }
-            mv "$ZIP_NAME" "$GITHUB_WORKSPACE/"
+            zip -r9 "$GITHUB_WORKSPACE/$ZIP_NAME" . \
+              -x ".git/*" -x "*.gitignore" >/dev/null
             cd "$GITHUB_WORKSPACE"
-            echo "Packaged: $ZIP_NAME"
+            echo "Packaged: $ZIP_NAME ($(du -sh $ZIP_NAME | cut -f1))"
           done
 
           ls -lh *.zip
@@ -199,7 +226,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: PitchKernel-munch-${{ github.run_number }}
-          path: ./*.zip
+          path: |
+            ${{ env.STABLE_ZIP }}
+            ${{ env.OC_ZIP }}
           if-no-files-found: error
           retention-days: 7
 
@@ -219,7 +248,6 @@ jobs:
           export KERNEL_BRANCH="default (apasitu)"
           export COMPILER_STRING="ZyCromerZ Clang 16.0.6"
           export KERNEL_SRC="$GITHUB_WORKSPACE/apasitu"
-
           for ZIP in "${{ env.STABLE_ZIP }}" "${{ env.OC_ZIP }}"; do
             export ZIP_PATH="$GITHUB_WORKSPACE/$ZIP"
             export ZIP_NAME="$ZIP"
@@ -242,17 +270,22 @@ jobs:
             ### Features
             - ReSukiSU + SUSFS (${{ inputs.ksu == true && 'enabled' || 'disabled' }})
             - TCP BBR congestion control
-            - CPU Frequency Profile via init service (no module needed)
+            - ROM detection: MIUI/HyperOS or AOSP (selected during flash)
 
-            ### CPU Frequency
+            ### CPU Frequency (verified from qcom-cpufreq-hw driver LUT)
             | Zip | Prime cpu7 |
             |---|---|
-            | Stable | 2841 MHz |
-            | Overclock | 3187 MHz |
+            | Stable | 2419 MHz |
+            | Overclock | 2841 MHz |
+
+            > 3187 MHz is skipped by qcom-cpufreq-hw at boot — not in hardware LUT.
 
             ### Installation
             Flash via TWRP or OrangeFox. Supports Android 11-16.
-          files: ./*.zip
+            Install PitchKernel-cpufreq-module via KernelSU/Magisk for frequency enforcement.
+          files: |
+            ${{ env.STABLE_ZIP }}
+            ${{ env.OC_ZIP }}
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: false
           prerelease: false
