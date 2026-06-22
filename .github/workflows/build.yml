@@ -114,7 +114,7 @@ jobs:
             bash ${{ inputs.script }} munch
           fi
 
-      - name: Package Stable and Overclock zips
+      - name: Package zip
         run: |
           DATE=$(date +%Y%m%d-%H%M)
           if [ "${{ inputs.ksu }}" == "true" ]; then
@@ -125,22 +125,18 @@ jobs:
           echo "BUILD_DATE=${DATE}" >> $GITHUB_ENV
           echo "BUILD_TYPE=${TYPE}" >> $GITHUB_ENV
 
-          # BUG FIX: target APTKernel_AOSP_*.zip specifically.
-          # build.sh always builds BOTH AOSP and MIUI sequentially —
-          # the MIUI section wipes anykernel/kernels/aosp/ and repopulates
-          # with MIUI files. Using 'find ... | head -1' found whichever
-          # zip came first alphabetically, which could be the MIUI zip.
-          # Targeting by name ensures we always get the correct AOSP zip.
+          # Get build.sh's own AOSP zip — captured before the MIUI section
+          # wipes anykernel/kernels/aosp/. Targeting by exact name pattern
+          # avoids accidentally picking the MIUI zip.
           AOSP_SRC_ZIP=$(find apasitu -maxdepth 1 -name "APTKernel_AOSP_*.zip" | head -1)
           if [ -z "$AOSP_SRC_ZIP" ] || [ ! -f "$AOSP_SRC_ZIP" ]; then
             echo "ERROR: APTKernel_AOSP_*.zip not found. Available zips:"
             find apasitu -maxdepth 1 -name "*.zip"
             exit 1
           fi
-          echo "AOSP source zip: $AOSP_SRC_ZIP ($(du -sh $AOSP_SRC_ZIP | cut -f1))"
+          echo "AOSP source: $AOSP_SRC_ZIP ($(du -sh $AOSP_SRC_ZIP | cut -f1))"
 
-          # Extract kernel files from build.sh's own AOSP zip (captured
-          # before the MIUI section's rm -rf anykernel/kernels/ runs)
+          # Extract kernel files from the AOSP zip
           mkdir -p /tmp/kernel_files
           unzip -q -j "$AOSP_SRC_ZIP" \
             "kernels/aosp/Image" \
@@ -150,118 +146,79 @@ jobs:
 
           for f in Image dtb dtbo.img; do
             if [ ! -f "/tmp/kernel_files/$f" ]; then
-              echo "ERROR: $f not found inside $AOSP_SRC_ZIP"
+              echo "ERROR: $f not found in $AOSP_SRC_ZIP"
               unzip -l "$AOSP_SRC_ZIP" | grep kernels
               exit 1
             fi
           done
-          echo "Extracted kernel files:"
+          echo "Kernel files:"
           ls -lh /tmp/kernel_files/
 
-          # AnyKernel3 tooling from the post-MIUI-build anykernel/ directory.
-          # The tooling (tools/, META-INF/, anykernel.sh from our fork) is
-          # intact — only anykernel/kernels/ got wiped by the MIUI section.
+          # AnyKernel3 base from the post-build anykernel/ dir.
+          # Tools, scripts, patch/ files are intact — only kernels/ got
+          # wiped by the MIUI build section.
           AK3_DIR="apasitu/anykernel"
-          if [ ! -d "$AK3_DIR" ]; then
-            echo "ERROR: $AK3_DIR not found"
-            ls apasitu/
-            exit 1
-          fi
+          [ -d "$AK3_DIR" ] || { echo "ERROR: $AK3_DIR not found"; ls apasitu/; exit 1; }
 
-          for profile in stable overclock; do
-            WORKDIR="/tmp/ak3_${profile}"
-            rm -rf "$WORKDIR"
-            cp -r "$AK3_DIR" "$WORKDIR"
+          WORKDIR="/tmp/ak3_build"
+          rm -rf "$WORKDIR"
+          cp -r "$AK3_DIR" "$WORKDIR"
 
-            # Inject the real AOSP kernel files
-            rm -rf "$WORKDIR/kernels"
-            mkdir -p "$WORKDIR/kernels/aosp"
-            cp /tmp/kernel_files/Image "$WORKDIR/kernels/aosp/"
-            cp /tmp/kernel_files/dtb "$WORKDIR/kernels/aosp/"
-            cp /tmp/kernel_files/dtbo.img "$WORKDIR/kernels/aosp/"
+          # Inject real AOSP kernel files
+          rm -rf "$WORKDIR/kernels"
+          mkdir -p "$WORKDIR/kernels/aosp"
+          cp /tmp/kernel_files/Image   "$WORKDIR/kernels/aosp/"
+          cp /tmp/kernel_files/dtb     "$WORKDIR/kernels/aosp/"
+          cp /tmp/kernel_files/dtbo.img "$WORKDIR/kernels/aosp/"
 
-            # Verify Image actually landed
-            if [ ! -f "$WORKDIR/kernels/aosp/Image" ]; then
-              echo "ERROR: Image missing after copy for profile=$profile"
-              exit 1
-            fi
+          # Verify Image landed
+          [ -f "$WORKDIR/kernels/aosp/Image" ] || \
+            { echo "ERROR: Image missing after copy"; exit 1; }
 
-            # Ship dtbo as AOSP only — this dtbo was built for AOSP.
-            # anykernel.sh auto-detects ROM from zip filename and renames
-            # the correct one; the MIUI dtbo would need a MIUI build.
-            # For now both zips are AOSP-targeted.
-            cp /tmp/kernel_files/dtbo.img "$WORKDIR/munch-aosp-dtbo.img"
-            # Provide a MIUI copy too so the volume selector doesn't fail
-            # if someone manually selects MIUI on this zip. It's the same
-            # dtbo — not ideal but safe (kernel boots, dtbo is less critical)
-            cp /tmp/kernel_files/dtbo.img "$WORKDIR/munch-miui-dtbo.img"
+          # Ship dtbo as both AOSP and MIUI entries so the ROM selector
+          # in anykernel.sh can rename the correct one. Both use the same
+          # compiled dtbo — MIUI vs AOSP dtbo difference is only relevant
+          # if the MIUI build target is used (build-miui.sh).
+          cp /tmp/kernel_files/dtbo.img "$WORKDIR/munch-aosp-dtbo.img"
+          cp /tmp/kernel_files/dtbo.img "$WORKDIR/munch-miui-dtbo.img"
 
-            # Substitute PROFILE_FIXED in anykernel.sh
-            if ! grep -q 'PROFILE_FIXED' "$WORKDIR/anykernel.sh"; then
-              echo "ERROR: PROFILE_FIXED placeholder not found in anykernel.sh"
-              echo "Fork's anykernel.sh may have changed — update this step"
-              head -20 "$WORKDIR/anykernel.sh"
-              exit 1
-            fi
-            sed -i "s/PROFILE_FIXED/${profile}/g" "$WORKDIR/anykernel.sh"
-            echo "[$profile] variant substituted: $(grep 'VARIANT=' "$WORKDIR/anykernel.sh" | grep -v '#')"
+          ZIP_NAME="PitchKernel-${TYPE}-munch-${DATE}.zip"
 
-            # Package
-            if [ "$profile" = "stable" ]; then
-              ZIP_NAME="PitchKernel-${TYPE}-munch-Stable-${DATE}.zip"
-            else
-              ZIP_NAME="PitchKernel-${TYPE}-munch-Overclock-${DATE}.zip"
-            fi
+          cd "$WORKDIR"
+          zip -r9 "$GITHUB_WORKSPACE/$ZIP_NAME" . \
+            -x ".git/*" -x "*.gitignore" >/dev/null
 
-            cd "$WORKDIR"
-            zip -r9 "$GITHUB_WORKSPACE/$ZIP_NAME" . \
-              -x ".git/*" -x "*.gitignore" >/dev/null
+          # Verify Image is actually inside the final zip
+          unzip -l "$GITHUB_WORKSPACE/$ZIP_NAME" | grep -q "kernels/aosp/Image" || \
+            { echo "ERROR: kernels/aosp/Image missing from $ZIP_NAME"; exit 1; }
 
-            # Verify kernel Image is actually inside the final zip
-            if ! unzip -l "$GITHUB_WORKSPACE/$ZIP_NAME" | grep -q "kernels/aosp/Image"; then
-              echo "ERROR: kernels/aosp/Image missing from $ZIP_NAME"
-              exit 1
-            fi
+          cd "$GITHUB_WORKSPACE"
+          echo "Packaged: $ZIP_NAME ($(du -sh $ZIP_NAME | cut -f1))"
+          echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
 
-            cd "$GITHUB_WORKSPACE"
-            echo "Packaged and verified: $ZIP_NAME ($(du -sh $ZIP_NAME | cut -f1))"
-          done
-
-          ls -lh *.zip
-          echo "STABLE_ZIP=PitchKernel-${TYPE}-munch-Stable-${DATE}.zip" >> $GITHUB_ENV
-          echo "OC_ZIP=PitchKernel-${TYPE}-munch-Overclock-${DATE}.zip" >> $GITHUB_ENV
-
-      - name: Upload artifacts
+      - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: PitchKernel-munch-${{ github.run_number }}
-          path: |
-            ${{ env.STABLE_ZIP }}
-            ${{ env.OC_ZIP }}
+          path: ${{ env.ZIP_NAME }}
           if-no-files-found: error
           retention-days: 7
 
-      - name: Send artifacts to Telegram
+      - name: Send artifact to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_THREAD_ID_ARTIFACT: ${{ secrets.TELEGRAM_THREAD_ID_ARTIFACT }}
+          ZIP_PATH: ${{ github.workspace }}/${{ env.ZIP_NAME }}
+          ZIP_NAME: ${{ env.ZIP_NAME }}
+          KERNEL_VERSION: "4.19"
+          ROOT_SOLUTION: ${{ inputs.ksu && 'RESUKISU' || 'VANILLA' }}
+          SUSFS_ENABLED: ${{ inputs.ksu }}
+          KERNEL_BRANCH: "default (apasitu)"
+          COMPILER_STRING: "ZyCromerZ Clang 16.0.6"
+          KERNEL_SRC: "apasitu"
         run: |
-          if [ "${{ inputs.ksu }}" == "true" ]; then
-            export ROOT_SOLUTION="RESUKISU"
-            export SUSFS_ENABLED="true"
-          else
-            export ROOT_SOLUTION="VANILLA"
-            export SUSFS_ENABLED="false"
-          fi
-          export TELEGRAM_BOT_TOKEN="${{ secrets.TELEGRAM_BOT_TOKEN }}"
-          export TELEGRAM_CHAT_ID="${{ secrets.TELEGRAM_CHAT_ID }}"
-          export TELEGRAM_THREAD_ID_ARTIFACT="${{ secrets.TELEGRAM_THREAD_ID_ARTIFACT }}"
-          export KERNEL_VERSION="4.19"
-          export KERNEL_BRANCH="default (apasitu)"
-          export COMPILER_STRING="ZyCromerZ Clang 16.0.6"
-          export KERNEL_SRC="$GITHUB_WORKSPACE/apasitu"
-          for ZIP in "${{ env.STABLE_ZIP }}" "${{ env.OC_ZIP }}"; do
-            export ZIP_PATH="$GITHUB_WORKSPACE/$ZIP"
-            export ZIP_NAME="$ZIP"
-            source PitchKernel/release/telegram.sh
-          done
+          source PitchKernel/release/telegram.sh
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
@@ -279,22 +236,14 @@ jobs:
             ### Features
             - ReSukiSU + SUSFS v2.1.0 (${{ inputs.ksu && 'enabled' || 'disabled' }})
             - TCP BBR congestion control
-            - ROM auto-detection: MIUI/HyperOS or AOSP (from zip filename, falls back to volume-key)
-
-            ### CPU Frequency Profiles
-            | Zip | Prime core (cpu7) |
-            |---|---|
-            | Stable | 2841600 kHz |
-            | Overclock | 3187200 kHz |
-
-            Profile applied via `/data/.pitchkernel_profile` written at flash time.
-            Requires the PitchKernel cpufreq module installed via KernelSU/Magisk to enforce on boot.
+            - ROM auto-detection: MIUI/HyperOS or AOSP
+            - CPU prime core ceiling: 2841600 kHz (hardware-enforced by qcom-cpufreq-hw driver)
 
             ### Installation
-            Flash via OrangeFox or TWRP. Supports Android 11-16 AOSP ROMs.
-          files: |
-            ${{ env.STABLE_ZIP }}
-            ${{ env.OC_ZIP }}
+            Flash via OrangeFox or TWRP.
+            Select ROM type during flash (auto-detected from zip name, volume-key fallback).
+            cpufreq script placed in `/data/adb/post-fs-data.d/` automatically — no separate module needed.
+          files: ${{ env.ZIP_NAME }}
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: false
           prerelease: false
