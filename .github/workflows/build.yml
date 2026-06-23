@@ -111,6 +111,12 @@ jobs:
             echo "# explicitly set it — adding explicit disable for safety."
             echo "CONFIG_UCLAMP_TASK=n"
             echo "CONFIG_UCLAMP_TASK_GROUP=n"
+            echo ""
+            echo "# I/O scheduler — mq-deadline is correct for UFS 3.1"
+            echo "# Low overhead, predictable latency, no queue depth waste"
+            echo "CONFIG_MQ_IOSCHED_DEADLINE=y"
+            echo 'CONFIG_DEFAULT_IOSCHED="mq-deadline"'
+            echo "CONFIG_IOSCHED_CFQ=n"
           } >> "$DEFCONFIG"
           echo "Patched defconfig:"
           tail -15 "$DEFCONFIG"
