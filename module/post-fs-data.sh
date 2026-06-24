@@ -20,10 +20,6 @@
 # The anykernel-installed script (patch/) is the canonical path — no separate
 # module install needed. This module now acts only as a fallback.
 
-CPU7_PATH="/sys/devices/system/cpu/cpu7/cpufreq/scaling_max_freq"
-# Hardware-confirmed ceiling: 2841600 kHz (qcom_cpufreq_hw_read_lut skips 3187200)
-TARGET=2841600
-
 # If the anykernel-installed script is already present, this module is redundant.
 # Exit cleanly and let the other script handle it.
 ANYKERNEL_SCRIPT="/data/adb/post-fs-data.d/pitchkernel_cpufreq.sh"
@@ -33,22 +29,42 @@ if [ -f "$ANYKERNEL_SCRIPT" ]; then
 fi
 
 # Fallback: anykernel script missing (e.g. fresh module install without reflash).
-# Wait for cpufreq sysfs node to appear.
+# Apply the same schedutil tuning that pitchkernel_cpufreq.sh would have applied.
+# We do NOT write scaling_max_freq — the hardware ceiling is enforced by the
+# qcom-cpufreq-hw driver. Writing it here would fight the driver and cap the
+# prime core unnecessarily.
+
+# Wait up to 10s for cpufreq sysfs to appear before applying tuning.
 i=0
-while [ ! -f "$CPU7_PATH" ] && [ $i -lt 20 ]; do
+while [ ! -d "/sys/devices/system/cpu/cpu0/cpufreq/schedutil" ] && [ $i -lt 20 ]; do
     sleep 0.5
     i=$((i + 1))
 done
 
-if [ ! -f "$CPU7_PATH" ]; then
-    log -p w -t PitchKernel "module: cpu7 scaling_max_freq not found after 10s"
+if [ ! -d "/sys/devices/system/cpu/cpu0/cpufreq/schedutil" ]; then
+    log -p w -t PitchKernel "module fallback: schedutil sysfs not found after 10s, skipping"
     exit 1
 fi
 
-ACTUAL=$(cat "$CPU7_PATH" 2>/dev/null)
-if [ "$ACTUAL" != "$TARGET" ]; then
-    echo "$TARGET" > "$CPU7_PATH" 2>/dev/null
-    ACTUAL=$(cat "$CPU7_PATH" 2>/dev/null)
-fi
+# Schedutil rate_limit_us — faster CPU freq response for gaming
+for cpu in 0 1 2 3 4 5 6 7; do
+    RATE_PATH="/sys/devices/system/cpu/cpu${cpu}/cpufreq/schedutil/rate_limit_us"
+    if [ -f "$RATE_PATH" ]; then
+        echo "200" > "$RATE_PATH" 2>/dev/null
+    fi
+done
 
-log -p i -t PitchKernel "module fallback: cpu7 scaling_max_freq = ${ACTUAL} kHz"
+# hispeed_freq per cluster — minimum freq to jump to on load burst
+for cpu in 0 4 7; do
+    HISPEED_PATH="/sys/devices/system/cpu/cpu${cpu}/cpufreq/schedutil/hispeed_freq"
+    if [ -f "$HISPEED_PATH" ]; then
+        case $cpu in
+            0) echo "1497600" > "$HISPEED_PATH" 2>/dev/null ;;  # silver mid
+            4) echo "1670400" > "$HISPEED_PATH" 2>/dev/null ;;  # gold mid
+            7) echo "2419200" > "$HISPEED_PATH" 2>/dev/null ;;  # prime
+        esac
+    fi
+done
+
+log -p i -t PitchKernel "module fallback: schedutil tuning applied (rate_limit_us=200, hispeed set per cluster)"
+
