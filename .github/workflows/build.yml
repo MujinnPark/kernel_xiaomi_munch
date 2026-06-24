@@ -150,6 +150,19 @@ jobs:
             bash ${{ inputs.script }} munch
           fi
 
+      - name: Fix ak3-core.sh in built anykernel dir
+        run: |
+          # build.sh clones MujinnPark/AnyKernel3 during Build kernel step.
+          # That fork has ak3-core.sh truncated at 535 lines (missing 431 lines).
+          # This causes "syntax error: unexpected end of file" on device at flash time.
+          # Fix: overwrite with the complete upstream file right after build completes.
+          TARGET="apasitu/anykernel/tools/ak3-core.sh"
+          [ -f "$TARGET" ] || { echo "ERROR: $TARGET not found — build may have failed"; exit 1; }
+          curl -fsSL "https://raw.githubusercontent.com/osm0sis/AnyKernel3/master/tools/ak3-core.sh"             -o "$TARGET"
+          LINES=$(wc -l < "$TARGET")
+          echo "ak3-core.sh lines after fix: $LINES"
+          [ "$LINES" -gt 900 ] || { echo "ERROR: still truncated ($LINES lines)"; exit 1; }
+
       - name: Package zip
         run: |
           DATE=$(date +%Y%m%d-%H%M)
@@ -283,5 +296,6 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: false
           prerelease: false
+
 
           
