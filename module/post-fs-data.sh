@@ -29,10 +29,11 @@ if [ -f "$ANYKERNEL_SCRIPT" ]; then
 fi
 
 # Fallback: anykernel script missing (e.g. fresh module install without reflash).
-# Apply the same schedutil tuning that pitchkernel_cpufreq.sh would have applied.
-# We do NOT write scaling_max_freq — the hardware ceiling is enforced by the
-# qcom-cpufreq-hw driver. Writing it here would fight the driver and cap the
-# prime core unnecessarily.
+# Apply the same tuning that pitchkernel_cpufreq.sh would have applied.
+# We do NOT write scaling_max_freq — the hardware OPP table ceiling is 3187200 kHz
+# for SM8250 prime core. With uclamp disabled, schedutil won't boost there for
+# normal tasks. FKM showing 3187 MHz is cpuinfo_max_freq (hardware capability),
+# not the actual operating frequency.
 
 # Wait up to 10s for cpufreq sysfs to appear before applying tuning.
 i=0
@@ -45,6 +46,17 @@ if [ ! -d "/sys/devices/system/cpu/cpu0/cpufreq/schedutil" ]; then
     log -p w -t PitchKernel "module fallback: schedutil sysfs not found after 10s, skipping"
     exit 1
 fi
+
+# I/O scheduler — enforce mq-deadline (init.rc resets it to cfq at boot)
+for blkdev in sda sdb sdc sdd sde sdf; do
+    SCHED_PATH="/sys/block/${blkdev}/queue/scheduler"
+    if [ -f "$SCHED_PATH" ]; then
+        if grep -q "mq-deadline" "$SCHED_PATH" 2>/dev/null; then
+            echo "mq-deadline" > "$SCHED_PATH" 2>/dev/null
+            log -p i -t PitchKernel "module fallback: set mq-deadline on /dev/${blkdev}"
+        fi
+    fi
+done
 
 # Schedutil rate_limit_us — faster CPU freq response for gaming
 for cpu in 0 1 2 3 4 5 6 7; do
@@ -66,5 +78,6 @@ for cpu in 0 4 7; do
     fi
 done
 
-log -p i -t PitchKernel "module fallback: schedutil tuning applied (rate_limit_us=200, hispeed set per cluster)"
+log -p i -t PitchKernel "module fallback: tuning applied (mq-deadline, rate_limit_us=200, hispeed per cluster)"
+
 
