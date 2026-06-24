@@ -63,10 +63,15 @@ jobs:
       - name: Notify Build Result
         run: |
           CONCLUSION="${{ github.event.workflow_run.conclusion }}"
+          # Bug fix: original used %0A (URL encoding) inside a string passed to
+          # --data-urlencode, which double-encodes it. Use printf with \n instead.
+          # Also: parse_mode=HTML requires HTML-safe content; date output is safe here.
           if [ "$CONCLUSION" = "success" ]; then
-            TEXT="✅ <b>PitchKernel</b> — Build Succeeded%0ADevice: munch (Poco F4)%0ADate: $(date +'%Y-%m-%d %H:%M UTC')"
+            TEXT=$(printf '✅ <b>PitchKernel</b> — Build Succeeded\nDevice: munch (Poco F4)\nDate: %s' \
+              "$(date +'%Y-%m-%d %H:%M UTC')")
           else
-            TEXT="❌ <b>PitchKernel</b> — Build Failed%0ADevice: munch (Poco F4)%0ADate: $(date +'%Y-%m-%d %H:%M UTC')"
+            TEXT=$(printf '❌ <b>PitchKernel</b> — Build Failed\nDevice: munch (Poco F4)\nDate: %s' \
+              "$(date +'%Y-%m-%d %H:%M UTC')")
           fi
 
           curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
@@ -75,3 +80,4 @@ jobs:
             -d "parse_mode=HTML" \
             -d "disable_web_page_preview=true" \
             --data-urlencode "text=${TEXT}" | jq '.ok'
+            
