@@ -1,0 +1,82 @@
+name: Notify
+
+on:
+  push:
+  workflow_run:
+    workflows: ["Build PitchKernel"]
+    types: [completed]
+
+jobs:
+  on-push:
+    name: Push Notify
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+    steps:
+      - name: Notify Push
+        run: |
+          SHORT="${{ github.sha }}"
+          SHORT="${SHORT:0:7}"
+          BRANCH="${{ github.ref_name }}"
+          AUTHOR="${{ github.event.head_commit.author.name }}"
+          TITLE=$(echo "${{ github.event.head_commit.message }}" | head -1)
+          BODY=$(echo "${{ github.event.head_commit.message }}" | tail -n +3)
+
+          # Bug fix: HTML-entity-encode user-controlled strings before embedding in
+          # HTML parse_mode message. Raw & < > in commit messages break Telegram's
+          # HTML parser silently (message not sent, no visible error).
+          html_encode() {
+            local s="$1"
+            s="${s//&/&amp;}"
+            s="${s//</&lt;}"
+            s="${s//>/&gt;}"
+            printf '%s' "$s"
+          }
+
+          TITLE_SAFE=$(html_encode "$TITLE")
+          AUTHOR_SAFE=$(html_encode "$AUTHOR")
+
+          TEXT="📌 <b>PitchKernel</b> — New Commit
+<code>${SHORT}</code> on <code>${BRANCH}</code>
+By: ${AUTHOR_SAFE}
+
+<i>${TITLE_SAFE}</i>"
+
+          if [ -n "$BODY" ]; then
+            BODY_SAFE=$(html_encode "$BODY")
+            TEXT="${TEXT}
+
+<pre>${BODY_SAFE}</pre>"
+          fi
+
+          # Bug fix: use --data-urlencode for the text field so that special chars
+          # (&, =, +, newlines) in commit messages don't corrupt the form body or
+          # inject extra curl parameters.
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d "message_thread_id=${{ secrets.TELEGRAM_THREAD_ID_EVENT }}" \
+            -d "parse_mode=HTML" \
+            -d "disable_web_page_preview=true" \
+            --data-urlencode "text=${TEXT}" | jq '.ok'
+
+  on-build:
+    name: Build Notify
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_run'
+    steps:
+      - name: Notify Build Result
+        run: |
+          CONCLUSION="${{ github.event.workflow_run.conclusion }}"
+          if [ "$CONCLUSION" = "success" ]; then
+            TEXT="✅ <b>PitchKernel</b> — Build Succeeded%0ADevice: munch (Poco F4)%0ADate: $(date +'%Y-%m-%d %H:%M UTC')"
+          else
+            TEXT="❌ <b>PitchKernel</b> — Build Failed%0ADevice: munch (Poco F4)%0ADate: $(date +'%Y-%m-%d %H:%M UTC')"
+          fi
+
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d "message_thread_id=${{ secrets.TELEGRAM_THREAD_ID_EVENT }}" \
+            -d "parse_mode=HTML" \
+            -d "disable_web_page_preview=true" \
+            -d "text=${TEXT}" | jq '.ok'
+
+            
