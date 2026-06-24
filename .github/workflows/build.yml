@@ -121,7 +121,6 @@ jobs:
             echo "# Low overhead, predictable latency, no queue depth waste"
             echo "CONFIG_MQ_IOSCHED_DEADLINE=y"
             echo 'CONFIG_DEFAULT_IOSCHED="mq-deadline"'
-            echo "# CONFIG_IOSCHED_CFQ is not set"
           } >> "$DEFCONFIG"
           echo "Patched defconfig:"
           tail -15 "$DEFCONFIG"
@@ -271,7 +270,7 @@ jobs:
             **Toolchain:** ZyCromerZ Clang 16.0.6
 
             ### Features
-            - ReSukiSU + SUSFS v2.1.0 (${{ inputs.ksu && 'enabled' || 'disabled' }})
+            - ReSukiSU + SUSFS (${{ inputs.ksu && 'enabled' || 'disabled' }})
             - TCP BBR congestion control
             - ROM auto-detection: MIUI/HyperOS or AOSP
             - CPU prime core ceiling: 2841600 kHz (hardware-enforced by qcom-cpufreq-hw driver)
@@ -284,4 +283,5 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: false
           prerelease: false
+
           
