@@ -130,6 +130,13 @@ jobs:
 
           # --- TCP BBR + I/O scheduler ---
           # These are additive (not already in the base defconfig), so >> append is fine.
+          #
+          # I/O SCHEDULER NOTE: On this 4.19 SM8250 kernel, UFS (ufshcd) registers via
+          # the SCSI subsystem. Android's init.qcom.rc (or fstab) often resets the scheduler
+          # to cfq at boot via sysfs write. Two-layer fix:
+          #   1. Defconfig: enable mq-deadline for blk-mq path AND legacy deadline for SCSI path.
+          #   2. Runtime: pitchkernel_cpufreq.sh writes scheduler to sysfs on every boot.
+          #   Without the runtime write, init.rc wins and CFQ takes over.
           {
             echo ""
             echo "# TCP BBR - PitchKernel"
@@ -138,9 +145,11 @@ jobs:
             echo "CONFIG_NET_SCH_FQ=y"
             echo 'CONFIG_DEFAULT_TCP_CONG="bbr"'
             echo ""
-            echo "# I/O scheduler — mq-deadline is correct for UFS 3.1"
-            echo "# Low overhead, predictable latency, no queue depth waste"
+            echo "# I/O scheduler — mq-deadline for blk-mq path (UFS via ufshcd)"
+            echo "# Also enable legacy IOSCHED_DEADLINE for SCSI single-queue fallback"
+            echo "# Runtime enforcement in pitchkernel_cpufreq.sh overrides init.rc CFQ reset"
             echo "CONFIG_MQ_IOSCHED_DEADLINE=y"
+            echo "CONFIG_IOSCHED_DEADLINE=y"
             echo 'CONFIG_DEFAULT_IOSCHED="mq-deadline"'
           } >> "$DEFCONFIG"
 
@@ -183,10 +192,36 @@ jobs:
           # Fix: overwrite with the complete upstream file right after build completes.
           TARGET="apasitu/anykernel/tools/ak3-core.sh"
           [ -f "$TARGET" ] || { echo "ERROR: $TARGET not found — build may have failed"; exit 1; }
-          curl -fsSL "https://raw.githubusercontent.com/osm0sis/AnyKernel3/master/tools/ak3-core.sh"             -o "$TARGET"
+          curl -fsSL "https://raw.githubusercontent.com/osm0sis/AnyKernel3/master/tools/ak3-core.sh" \
+            -o "$TARGET"
           LINES=$(wc -l < "$TARGET")
           echo "ak3-core.sh lines after fix: $LINES"
           [ "$LINES" -gt 900 ] || { echo "ERROR: still truncated ($LINES lines)"; exit 1; }
+
+      - name: Overlay PitchKernel AnyKernel3 files
+        run: |
+          # CRITICAL BUG FIX: build.sh clones MujinnPark/AnyKernel3 and uses whatever
+          # anykernel.sh and patch/ files are in THAT repo. Our customized anykernel.sh
+          # (ROM detection, Image move fix, cpufreq script install) and
+          # patch/pitchkernel_cpufreq.sh are stored in THIS repo under PitchKernel/anykernel/.
+          # Without this overlay step, all our anykernel.sh work is silently dead code.
+          AK3_BUILT="apasitu/anykernel"
+          AK3_OURS="PitchKernel/anykernel"
+          [ -d "$AK3_BUILT" ] || { echo "ERROR: $AK3_BUILT not found — build failed"; exit 1; }
+          [ -d "$AK3_OURS"  ] || { echo "ERROR: $AK3_OURS not found — missing from repo"; exit 1; }
+
+          echo "Overlaying PitchKernel anykernel files over cloned MujinnPark/AnyKernel3..."
+          cp -v "$AK3_OURS/anykernel.sh" "$AK3_BUILT/anykernel.sh"
+          mkdir -p "$AK3_BUILT/patch"
+          cp -v "$AK3_OURS/patch/pitchkernel_cpufreq.sh" "$AK3_BUILT/patch/pitchkernel_cpufreq.sh"
+          chmod 755 "$AK3_BUILT/patch/pitchkernel_cpufreq.sh"
+
+          echo "Verifying overlaid files:"
+          grep -m1 "PitchKernel by Mujinn" "$AK3_BUILT/anykernel.sh" \
+            || { echo "ERROR: anykernel.sh does not look like our version"; exit 1; }
+          grep -m1 "pitchkernel_cpufreq" "$AK3_BUILT/patch/pitchkernel_cpufreq.sh" \
+            || { echo "ERROR: pitchkernel_cpufreq.sh missing expected content"; exit 1; }
+          echo "Overlay complete."
 
       - name: Package zip
         run: |
@@ -321,6 +356,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: false
           prerelease: false
+
 
 
 
