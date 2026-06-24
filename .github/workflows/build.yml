@@ -100,17 +100,36 @@ jobs:
         run: |
           DEFCONFIG="apasitu/arch/arm64/configs/munch_defconfig"
           [ -f "$DEFCONFIG" ] || { echo "ERROR: $DEFCONFIG not found"; exit 1; }
+
+          # --- Kernel name ---
           # Override AstideLabs' kernel name — defconfig sets CONFIG_LOCALVERSION="-aptusitu-perf"
           # which appends after our localversion-st, producing "-pitchkernel-aptusitu-perf-gXXX".
           # Replace with empty string so only localversion-st ("-pitchkernel") takes effect.
-          # Also disable LOCALVERSION_AUTO to drop the git hash suffix.
           sed -i 's/CONFIG_LOCALVERSION="-aptusitu-perf"/CONFIG_LOCALVERSION=""/' "$DEFCONFIG"
-          sed -i 's/CONFIG_LOCALVERSION_AUTO=y/# CONFIG_LOCALVERSION_AUTO is not set/' "$DEFCONFIG"
-          # Also explicitly append the disable in case the sed target string differs
-          # (some defconfigs don't have the line at all, relying on Kconfig default)
-          # Appending overrides whatever was set above — last value wins in kconfig.
-          echo "# CONFIG_LOCALVERSION_AUTO is not set" >> "$DEFCONFIG"
 
+          # --- LOCALVERSION_AUTO ---
+          # Drop the git hash suffix. Use scripts/config so the symbol is set exactly
+          # once — avoids the "override: reassigning to symbol LOCALVERSION_AUTO" warning
+          # that the old sed + append approach produced (symbol appeared twice in defconfig).
+          cd apasitu
+          ./scripts/config --file arch/arm64/configs/munch_defconfig \
+            --disable LOCALVERSION_AUTO
+          cd ..
+
+          # --- uclamp disable (CRITICAL FIX) ---
+          # Previous approach appended comment lines ("# CONFIG_UCLAMP_TASK is not set")
+          # to the defconfig. Kconfig only honours that syntax in a fully-resolved .config,
+          # NOT in a defconfig fragment — comments in defconfigs are ignored, so uclamp
+          # was never actually disabled and the cpufreq scaling bug persisted every build.
+          # scripts/config writes the correct active directive that Kconfig respects.
+          cd apasitu
+          ./scripts/config --file arch/arm64/configs/munch_defconfig \
+            --disable UCLAMP_TASK \
+            --disable UCLAMP_TASK_GROUP
+          cd ..
+
+          # --- TCP BBR + I/O scheduler ---
+          # These are additive (not already in the base defconfig), so >> append is fine.
           {
             echo ""
             echo "# TCP BBR - PitchKernel"
@@ -119,18 +138,17 @@ jobs:
             echo "CONFIG_NET_SCH_FQ=y"
             echo 'CONFIG_DEFAULT_TCP_CONG="bbr"'
             echo ""
-            echo "# Disable uclamp — per Lime kernel dev: conflicts with scheduler"
-            echo "# causing cpufreq to not scale correctly on this SM8250 kernel."
-            echo "# CONFIG_UCLAMP_TASK is not set"
-            echo "# CONFIG_UCLAMP_TASK_GROUP is not set"
-            echo ""
             echo "# I/O scheduler — mq-deadline is correct for UFS 3.1"
             echo "# Low overhead, predictable latency, no queue depth waste"
             echo "CONFIG_MQ_IOSCHED_DEADLINE=y"
             echo 'CONFIG_DEFAULT_IOSCHED="mq-deadline"'
           } >> "$DEFCONFIG"
-          echo "Patched defconfig:"
-          tail -15 "$DEFCONFIG"
+
+          echo "Patched defconfig (tail -20):"
+          tail -20 "$DEFCONFIG"
+          echo ""
+          echo "Verifying uclamp directives written by scripts/config:"
+          grep -E "UCLAMP_TASK|LOCALVERSION_AUTO" "$DEFCONFIG" || echo "WARNING: grep found nothing — check scripts/config output above"
 
       - name: Build kernel
         env:
@@ -303,6 +321,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: false
           prerelease: false
+
 
 
 
