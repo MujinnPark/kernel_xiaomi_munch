@@ -100,6 +100,13 @@ jobs:
         run: |
           DEFCONFIG="apasitu/arch/arm64/configs/munch_defconfig"
           [ -f "$DEFCONFIG" ] || { echo "ERROR: $DEFCONFIG not found"; exit 1; }
+          # Override AstideLabs' kernel name — defconfig sets CONFIG_LOCALVERSION="-aptusitu-perf"
+          # which appends after our localversion-st, producing "-pitchkernel-aptusitu-perf-gXXX".
+          # Replace with empty string so only localversion-st ("-pitchkernel") takes effect.
+          # Also disable LOCALVERSION_AUTO to drop the git hash suffix.
+          sed -i 's/CONFIG_LOCALVERSION="-aptusitu-perf"/CONFIG_LOCALVERSION=""/' "$DEFCONFIG"
+          sed -i 's/CONFIG_LOCALVERSION_AUTO=y/# CONFIG_LOCALVERSION_AUTO is not set/' "$DEFCONFIG"
+
           {
             echo ""
             echo "# TCP BBR - PitchKernel"
