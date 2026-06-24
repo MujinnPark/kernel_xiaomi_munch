@@ -106,6 +106,10 @@ jobs:
           # Also disable LOCALVERSION_AUTO to drop the git hash suffix.
           sed -i 's/CONFIG_LOCALVERSION="-aptusitu-perf"/CONFIG_LOCALVERSION=""/' "$DEFCONFIG"
           sed -i 's/CONFIG_LOCALVERSION_AUTO=y/# CONFIG_LOCALVERSION_AUTO is not set/' "$DEFCONFIG"
+          # Also explicitly append the disable in case the sed target string differs
+          # (some defconfigs don't have the line at all, relying on Kconfig default)
+          # Appending overrides whatever was set above — last value wins in kconfig.
+          echo "# CONFIG_LOCALVERSION_AUTO is not set" >> "$DEFCONFIG"
 
           {
             echo ""
@@ -115,12 +119,8 @@ jobs:
             echo "CONFIG_NET_SCH_FQ=y"
             echo 'CONFIG_DEFAULT_TCP_CONG="bbr"'
             echo ""
-            echo "# Disable uclamp — per Lime kernel dev diagnosis:"
-            echo "# uclamp conflicts with the scheduler on this kernel,"
-            echo "# causing cpufreq scaling to not behave correctly."
-            echo "# munch_stock-defconfig explicitly disables this;"
-            echo "# munch_defconfig inherits default (n) but doesn't"
-            echo "# explicitly set it — adding explicit disable for safety."
+            echo "# Disable uclamp — per Lime kernel dev: conflicts with scheduler"
+            echo "# causing cpufreq to not scale correctly on this SM8250 kernel."
             echo "# CONFIG_UCLAMP_TASK is not set"
             echo "# CONFIG_UCLAMP_TASK_GROUP is not set"
             echo ""
@@ -303,6 +303,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: false
           prerelease: false
+
 
 
           
