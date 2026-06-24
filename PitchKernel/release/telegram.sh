@@ -47,12 +47,55 @@ SUSFS_VER="N/A"
 if [ "${SUSFS_ENABLED:-false}" = "true" ] && [ "${ROOT_SOLUTION:-}" != "VANILLA" ]; then
     SUSFS_H="${KERNEL_SRC:-}/include/linux/susfs.h"
     if [ -f "$SUSFS_H" ]; then
-        SUSFS_VER=$(grep -m1 'SUSFS_VERSION' "$SUSFS_H" | grep -oP 'v?\d+\.\d+\.\d+' | head -1 || true)
-        [ -n "$SUSFS_VER" ] && [[ "$SUSFS_VER" != v* ]] && SUSFS_VER="v${SUSFS_VER}"
-        [ -z "$SUSFS_VER" ] && SUSFS_VER="N/A"
+        # Bug fix: removed '|| true' which silently swallowed grep failures.
+        # Now warns explicitly if the version string can't be parsed, so you
+        # know whether the header format changed rather than silently getting N/A.
+        SUSFS_VER=$(grep -m1 'SUSFS_VERSION' "$SUSFS_H" | grep -oP 'v?\d+\.\d+\.\d+' | head -1)
+        if [ -z "$SUSFS_VER" ]; then
+            warn "Could not parse SUSFS_VERSION from $SUSFS_H — check header format"
+            SUSFS_VER="N/A"
+        else
+            [[ "$SUSFS_VER" == v* ]] || SUSFS_VER="v${SUSFS_VER}"
+        fi
+    else
+        warn "SUSFS header not found at $SUSFS_H — SUSFS_ENABLED=true but header missing"
     fi
 fi
 
+# Bug fix: original mdv2_code_escape() only escaped \ and \`.
+# Telegram MarkdownV2 requires escaping 16 special characters outside code blocks:
+#   _ * [ ] ( ) ~ ` > # + - = | { } . !
+# Content inside triple-backtick fences is exempt, but the fence delimiters
+# themselves must be present and balanced. This full implementation future-proofs
+# the function for any text added outside a code fence.
+mdv2_escape() {
+    local s="$1"
+    # Backslash must be escaped first (it's the escape char itself)
+    s="${s//\\/\\\\}"
+    # Escape all other MarkdownV2 special characters
+    s="${s//_/\\_}"
+    s="${s//\*/\\*}"
+    s="${s//[/\\[}"
+    s="${s//]/\\]}"
+    s="${s//(/\\(}"
+    s="${s//)/\\)}"
+    s="${s//~/\\~}"
+    s="${s//\`/\\\`}"
+    s="${s//>/\\>}"
+    s="${s//#/\\#}"
+    s="${s//+/\\+}"
+    s="${s//-/\\-}"
+    s="${s//=/\\=}"
+    s="${s//|/\\|}"
+    s="${s//\{/\\{}"
+    s="${s//\}/\\}}"
+    s="${s//./\\.}"
+    s="${s//!/\\!}"
+    printf '%s' "$s"
+}
+
+# Alias: content inside code fences only needs backtick and backslash escaping.
+# Use mdv2_escape for any text outside fences; mdv2_code_escape for inside.
 mdv2_code_escape() {
     local s="$1"
     s="${s//\\/\\\\}"
