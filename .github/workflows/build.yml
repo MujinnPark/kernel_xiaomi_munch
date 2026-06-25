@@ -219,7 +219,7 @@ jobs:
           echo "Verifying overlaid files:"
           grep -m1 "PitchKernel by Mujinn" "$AK3_BUILT/anykernel.sh" \
             || { echo "ERROR: anykernel.sh does not look like our version"; exit 1; }
-          grep -m1 "pitchkernel_cpufreq" "$AK3_BUILT/patch/pitchkernel_cpufreq.sh" \
+          grep -m1 "PitchKernel" "$AK3_BUILT/patch/pitchkernel_cpufreq.sh" \
             || { echo "ERROR: pitchkernel_cpufreq.sh missing expected content"; exit 1; }
           echo "Overlay complete."
 
