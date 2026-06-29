@@ -90,11 +90,11 @@ else
 fi;
 ui_print " ";
 
-## CPU note — SM8250 prime core (cpu7) OPP table ceiling = 3187200 kHz.
-## FKM showing "3187 MHz" is CORRECT — that is what cpuinfo_max_freq reports.
-## With uclamp disabled, schedutil does NOT boost there for normal tasks.
-## No sysfs write needed at flash time — governor handles this at runtime.
-ui_print "  CPU: uclamp disabled, schedutil governs prime core ceiling";
+## CPU note: SM8250 prime core (cpu7) has OPP states up to 3187200 kHz, including
+## the stock ceiling 2841600 kHz plus a higher overclock-style step at 3187200 kHz.
+## Confirmed via on-device time_in_state: cpu7 genuinely runs at 3187200 kHz under
+## real load (this is working as designed, not a bug). No sysfs write is made here.
+ui_print "  CPU: prime core OPP table includes up to 3187200 kHz";
 ui_print " ";
 
 ## Install cpufreq script to post-fs-data.d.
