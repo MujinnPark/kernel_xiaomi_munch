@@ -63,8 +63,6 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/ccache_mikernel
-          # Bug fix: was github.run_id — unique per run, so cache was NEVER reused.
-          # Now: exact hit on reruns of same commit; branch-level fallback for new commits.
           key: pitchkernel-ccache-munch-${{ github.ref_name }}-${{ github.sha }}
           restore-keys: |
             pitchkernel-ccache-munch-${{ github.ref_name }}-
@@ -101,42 +99,19 @@ jobs:
           DEFCONFIG="apasitu/arch/arm64/configs/munch_defconfig"
           [ -f "$DEFCONFIG" ] || { echo "ERROR: $DEFCONFIG not found"; exit 1; }
 
-          # --- Kernel name ---
-          # Override AstideLabs' kernel name — defconfig sets CONFIG_LOCALVERSION="-aptusitu-perf"
-          # which appends after our localversion-st, producing "-pitchkernel-aptusitu-perf-gXXX".
-          # Replace with empty string so only localversion-st ("-pitchkernel") takes effect.
           sed -i 's/CONFIG_LOCALVERSION="-aptusitu-perf"/CONFIG_LOCALVERSION=""/' "$DEFCONFIG"
 
-          # --- LOCALVERSION_AUTO ---
-          # Drop the git hash suffix. Use scripts/config so the symbol is set exactly
-          # once — avoids the "override: reassigning to symbol LOCALVERSION_AUTO" warning
-          # that the old sed + append approach produced (symbol appeared twice in defconfig).
           cd apasitu
           ./scripts/config --file arch/arm64/configs/munch_defconfig \
             --disable LOCALVERSION_AUTO
           cd ..
 
-          # --- uclamp disable (CRITICAL FIX) ---
-          # Previous approach appended comment lines ("# CONFIG_UCLAMP_TASK is not set")
-          # to the defconfig. Kconfig only honours that syntax in a fully-resolved .config,
-          # NOT in a defconfig fragment — comments in defconfigs are ignored, so uclamp
-          # was never actually disabled and the cpufreq scaling bug persisted every build.
-          # scripts/config writes the correct active directive that Kconfig respects.
           cd apasitu
           ./scripts/config --file arch/arm64/configs/munch_defconfig \
             --disable UCLAMP_TASK \
             --disable UCLAMP_TASK_GROUP
           cd ..
 
-          # --- TCP BBR + I/O scheduler ---
-          # These are additive (not already in the base defconfig), so >> append is fine.
-          #
-          # I/O SCHEDULER NOTE: On this 4.19 SM8250 kernel, UFS (ufshcd) registers via
-          # the SCSI subsystem. Android's init.qcom.rc (or fstab) often resets the scheduler
-          # to cfq at boot via sysfs write. Two-layer fix:
-          #   1. Defconfig: enable mq-deadline for blk-mq path AND legacy deadline for SCSI path.
-          #   2. Runtime: pitchkernel_cpufreq.sh writes scheduler to sysfs on every boot.
-          #   Without the runtime write, init.rc wins and CFQ takes over.
           {
             echo ""
             echo "# TCP congestion control - PitchKernel"
@@ -146,9 +121,7 @@ jobs:
             echo "CONFIG_NET_SCH_FQ=y"
             echo 'CONFIG_DEFAULT_TCP_CONG="bbr"'
             echo ""
-            echo "# I/O scheduler — mq-deadline for blk-mq path (UFS via ufshcd)"
-            echo "# Also enable legacy IOSCHED_DEADLINE for SCSI single-queue fallback"
-            echo "# Runtime enforcement in pitchkernel_cpufreq.sh overrides init.rc CFQ reset"
+            echo "# I/O scheduler"
             echo "CONFIG_MQ_IOSCHED_DEADLINE=y"
             echo "CONFIG_IOSCHED_DEADLINE=y"
             echo 'CONFIG_DEFAULT_IOSCHED="mq-deadline"'
@@ -157,24 +130,18 @@ jobs:
           echo "Patched defconfig (tail -20):"
           tail -20 "$DEFCONFIG"
           echo ""
-          echo "Verifying uclamp directives written by scripts/config:"
-          grep -E "UCLAMP_TASK|LOCALVERSION_AUTO" "$DEFCONFIG" || echo "WARNING: grep found nothing — check scripts/config output above"
+          echo "Verifying uclamp directives:"
+          grep -E "UCLAMP_TASK|LOCALVERSION_AUTO" "$DEFCONFIG" || echo "WARNING: grep found nothing"
 
       - name: Build kernel
         env:
-          # Bug fix: empty timestamp prevents __DATE__/__TIME__ macros from
-          # generating unique hashes on every build, which killed ccache hit rate.
           KBUILD_BUILD_TIMESTAMP: ''
           KBUILD_BUILD_USER: pitchkernel
           KBUILD_BUILD_HOST: github-actions
-          # Bug fix: explicit CCACHE_DIR matches the cache action path above.
           CCACHE_DIR: ~/.cache/ccache_mikernel
           CCACHE_MAXSIZE: 5G
           CCACHE_COMPRESS: '1'
           CCACHE_COMPRESSLEVEL: '1'
-          # time_macros: ignore __DATE__/__TIME__ differences (the key fix for kernels).
-          # file_stat_matches: use stat instead of mtime for file change detection.
-          # locale: ignore locale differences between runs.
           CCACHE_SLOPPINESS: file_stat_matches,locale,time_macros
         run: |
           cd apasitu
@@ -185,27 +152,35 @@ jobs:
             bash ${{ inputs.script }} munch
           fi
 
-      - name: Fix ak3-core.sh in built anykernel dir
+      # FIX: Replaced the old "Fix ak3-core.sh" + "Hard Gate" two-step workaround.
+      # The actual root cause was MujinnPark/AnyKernel3 having ak3-core.sh truncated
+      # at 563 lines (missing write_boot, reset_ak, SLOT, and full flash logic).
+      # That fork is now fixed. This step is a pure safety gate — it will hard-fail
+      # with a clear message if the truncated file ever comes back, instead of
+      # silently re-fetching from upstream and hiding the broken fork.
+      - name: Verify ak3-core.sh is complete
         run: |
-          # build.sh clones MujinnPark/AnyKernel3 during Build kernel step.
-          # That fork has ak3-core.sh truncated at 535 lines (missing 431 lines).
-          # This causes "syntax error: unexpected end of file" on device at flash time.
-          # Fix: overwrite with the complete upstream file right after build completes.
           TARGET="apasitu/anykernel/tools/ak3-core.sh"
           [ -f "$TARGET" ] || { echo "ERROR: $TARGET not found — build may have failed"; exit 1; }
-          curl -fsSL "https://raw.githubusercontent.com/osm0sis/AnyKernel3/master/tools/ak3-core.sh" \
-            -o "$TARGET"
           LINES=$(wc -l < "$TARGET")
-          echo "ak3-core.sh lines after fix: $LINES"
-          [ "$LINES" -gt 900 ] || { echo "ERROR: still truncated ($LINES lines)"; exit 1; }
+          echo "ak3-core.sh: $LINES lines"
+          if [ "$LINES" -lt 900 ]; then
+            echo "FATAL: ak3-core.sh is truncated at $LINES lines."
+            echo "The MujinnPark/AnyKernel3 fork has a broken tools/ak3-core.sh."
+            echo "Fix the fork (push upstream file), do NOT add a curl workaround here."
+            echo ""
+            echo "Quick fix:"
+            echo "  git clone https://github.com/MujinnPark/AnyKernel3.git"
+            echo "  cd AnyKernel3"
+            echo "  curl -fsSL https://raw.githubusercontent.com/osm0sis/AnyKernel3/master/tools/ak3-core.sh -o tools/ak3-core.sh"
+            echo "  git add tools/ak3-core.sh && git commit -m 'fix: restore complete ak3-core.sh' && git push"
+            exit 1
+          fi
+          bash -n "$TARGET" || { echo "FATAL: ak3-core.sh has a syntax error"; exit 1; }
+          echo "ak3-core.sh OK ($LINES lines, passes bash -n)"
 
       - name: Overlay PitchKernel AnyKernel3 files
         run: |
-          # CRITICAL BUG FIX: build.sh clones MujinnPark/AnyKernel3 and uses whatever
-          # anykernel.sh and patch/ files are in THAT repo. Our customized anykernel.sh
-          # (ROM detection, Image move fix, cpufreq script install) and
-          # patch/pitchkernel_cpufreq.sh are stored in THIS repo under PitchKernel/anykernel/.
-          # Without this overlay step, all our anykernel.sh work is silently dead code.
           AK3_BUILT="apasitu/anykernel"
           AK3_OURS="PitchKernel/anykernel"
           [ -d "$AK3_BUILT" ] || { echo "ERROR: $AK3_BUILT not found — build failed"; exit 1; }
@@ -235,9 +210,6 @@ jobs:
           echo "BUILD_DATE=${DATE}" >> $GITHUB_ENV
           echo "BUILD_TYPE=${TYPE}" >> $GITHUB_ENV
 
-          # Get build.sh's own AOSP zip — captured before the MIUI section
-          # wipes anykernel/kernels/aosp/. Targeting by exact name pattern
-          # avoids accidentally picking the MIUI zip.
           AOSP_SRC_ZIP=$(find apasitu -maxdepth 1 -name "APTKernel_AOSP_*.zip" | head -1)
           if [ -z "$AOSP_SRC_ZIP" ] || [ ! -f "$AOSP_SRC_ZIP" ]; then
             echo "ERROR: APTKernel_AOSP_*.zip not found. Available zips:"
@@ -246,7 +218,6 @@ jobs:
           fi
           echo "AOSP source: $AOSP_SRC_ZIP ($(du -sh $AOSP_SRC_ZIP | cut -f1))"
 
-          # Extract kernel files from the AOSP zip
           mkdir -p /tmp/kernel_files
           unzip -q -j "$AOSP_SRC_ZIP" \
             "kernels/aosp/Image" \
@@ -264,9 +235,6 @@ jobs:
           echo "Kernel files:"
           ls -lh /tmp/kernel_files/
 
-          # AnyKernel3 base from the post-build anykernel/ dir.
-          # Tools, scripts, patch/ files are intact — only kernels/ got
-          # wiped by the MIUI build section.
           AK3_DIR="apasitu/anykernel"
           [ -d "$AK3_DIR" ] || { echo "ERROR: $AK3_DIR not found"; ls apasitu/; exit 1; }
 
@@ -274,45 +242,25 @@ jobs:
           rm -rf "$WORKDIR"
           cp -r "$AK3_DIR" "$WORKDIR"
 
-          # --- HARD GATE: verify ak3-core.sh in the actual dir about to be zipped ---
-          # Steps 13/14 patch apasitu/anykernel/, but build.sh (step 12) may have
-          # left a different/stale state there depending on internal clone timing.
-          # Don't trust earlier steps -- check the file that is ACTUALLY about to
-          # ship, right here, right before zipping.
+          # Final sanity check on what is actually going into the zip
           CORE_LINES=$(wc -l < "$WORKDIR/tools/ak3-core.sh")
-          echo "ak3-core.sh in \$WORKDIR has $CORE_LINES lines"
-          if [ "$CORE_LINES" -lt 900 ]; then
-            echo "ERROR: ak3-core.sh in \$WORKDIR is truncated ($CORE_LINES lines)."
-            echo "Re-fetching directly into \$WORKDIR as a last-resort fix..."
-            curl -fsSL "https://raw.githubusercontent.com/osm0sis/AnyKernel3/master/tools/ak3-core.sh" \
-              -o "$WORKDIR/tools/ak3-core.sh"
-            CORE_LINES=$(wc -l < "$WORKDIR/tools/ak3-core.sh")
-            echo "ak3-core.sh after re-fetch: $CORE_LINES lines"
-            [ "$CORE_LINES" -gt 900 ] || { echo "FATAL: still truncated after direct re-fetch. Aborting build."; exit 1; }
-          fi
-          bash -n "$WORKDIR/tools/ak3-core.sh" || { echo "FATAL: ak3-core.sh has a syntax error. Aborting build."; exit 1; }
-
           UB_LINES=$(wc -l < "$WORKDIR/META-INF/com/google/android/update-binary")
-          echo "update-binary in \$WORKDIR has $UB_LINES lines"
+          echo "ak3-core.sh in \$WORKDIR: $CORE_LINES lines"
+          echo "update-binary in \$WORKDIR: $UB_LINES lines"
+          [ "$CORE_LINES" -gt 900 ] || { echo "FATAL: ak3-core.sh truncated in WORKDIR"; exit 1; }
+          bash -n "$WORKDIR/tools/ak3-core.sh" || { echo "FATAL: ak3-core.sh syntax error"; exit 1; }
           bash -n "$WORKDIR/META-INF/com/google/android/update-binary" || \
-            { echo "FATAL: update-binary has a syntax error (likely truncated). Aborting build."; exit 1; }
-          # --- END HARD GATE ---
+            { echo "FATAL: update-binary syntax error"; exit 1; }
 
-          # Inject real AOSP kernel files
           rm -rf "$WORKDIR/kernels"
           mkdir -p "$WORKDIR/kernels/aosp"
-          cp /tmp/kernel_files/Image   "$WORKDIR/kernels/aosp/"
-          cp /tmp/kernel_files/dtb     "$WORKDIR/kernels/aosp/"
+          cp /tmp/kernel_files/Image    "$WORKDIR/kernels/aosp/"
+          cp /tmp/kernel_files/dtb      "$WORKDIR/kernels/aosp/"
           cp /tmp/kernel_files/dtbo.img "$WORKDIR/kernels/aosp/"
 
-          # Verify Image landed
           [ -f "$WORKDIR/kernels/aosp/Image" ] || \
             { echo "ERROR: Image missing after copy"; exit 1; }
 
-          # Ship dtbo as both AOSP and MIUI entries so the ROM selector
-          # in anykernel.sh can rename the correct one. Both use the same
-          # compiled dtbo — MIUI vs AOSP dtbo difference is only relevant
-          # if the MIUI build target is used (build-miui.sh).
           cp /tmp/kernel_files/dtbo.img "$WORKDIR/munch-aosp-dtbo.img"
           cp /tmp/kernel_files/dtbo.img "$WORKDIR/munch-miui-dtbo.img"
 
@@ -322,7 +270,6 @@ jobs:
           zip -r9 "$GITHUB_WORKSPACE/$ZIP_NAME" . \
             -x ".git/*" -x "*.gitignore" >/dev/null
 
-          # Verify Image is actually inside the final zip
           unzip -l "$GITHUB_WORKSPACE/$ZIP_NAME" | grep -q "kernels/aosp/Image" || \
             { echo "ERROR: kernels/aosp/Image missing from $ZIP_NAME"; exit 1; }
 
@@ -381,9 +328,4 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: false
           prerelease: false
-
-
-
-
-
           
