@@ -10,11 +10,8 @@ on:
         type: choice
         options:
           - build.sh
-        # NOTE: build-miui.sh removed — the Package zip step always extracts
-        # from APTKernel_AOSP_*.zip regardless of which script ran.
-        # MIUI/AOSP selection is handled at flash time via anykernel.sh ROM detection.
       ksu:
-        description: 'Enable ReSukiSU + SUSFS'
+        description: 'Enable KernelSU Next + SUSFS'
         required: true
         type: boolean
         default: true
@@ -36,7 +33,7 @@ jobs:
       - name: Notify build started
         run: |
           if [ "${{ inputs.ksu }}" == "true" ]; then
-            LABEL="ReSukiSU+SUSFS"
+            LABEL="KernelSU Next + SUSFS"
           else
             LABEL="NoKSU"
           fi
@@ -152,12 +149,6 @@ jobs:
             bash ${{ inputs.script }} munch
           fi
 
-      # FIX: Replaced the old "Fix ak3-core.sh" + "Hard Gate" two-step workaround.
-      # The actual root cause was MujinnPark/AnyKernel3 having ak3-core.sh truncated
-      # at 563 lines (missing write_boot, reset_ak, SLOT, and full flash logic).
-      # That fork is now fixed. This step is a pure safety gate — it will hard-fail
-      # with a clear message if the truncated file ever comes back, instead of
-      # silently re-fetching from upstream and hiding the broken fork.
       - name: Verify ak3-core.sh is complete
         run: |
           TARGET="apasitu/anykernel/tools/ak3-core.sh"
@@ -190,25 +181,32 @@ jobs:
           cp -v "$AK3_OURS/anykernel.sh" "$AK3_BUILT/anykernel.sh"
           mkdir -p "$AK3_BUILT/patch"
           cp -v "$AK3_OURS/patch/pitchkernel_cpufreq.sh" "$AK3_BUILT/patch/pitchkernel_cpufreq.sh"
+          cp -v "$AK3_OURS/patch/pitchkernel_root_hide.sh" "$AK3_BUILT/patch/pitchkernel_root_hide.sh"
           chmod 755 "$AK3_BUILT/patch/pitchkernel_cpufreq.sh"
+          chmod 755 "$AK3_BUILT/patch/pitchkernel_root_hide.sh"
 
           echo "Verifying overlaid files:"
           grep -m1 "PitchKernel by Mujinn" "$AK3_BUILT/anykernel.sh" \
             || { echo "ERROR: anykernel.sh does not look like our version"; exit 1; }
           grep -m1 "PitchKernel" "$AK3_BUILT/patch/pitchkernel_cpufreq.sh" \
             || { echo "ERROR: pitchkernel_cpufreq.sh missing expected content"; exit 1; }
+          test -f "$AK3_BUILT/patch/pitchkernel_root_hide.sh" \
+            || { echo "ERROR: pitchkernel_root_hide.sh was not overlaid"; exit 1; }
           echo "Overlay complete."
 
       - name: Package zip
         run: |
           DATE=$(date +%Y%m%d-%H%M)
           if [ "${{ inputs.ksu }}" == "true" ]; then
-            TYPE="sukisu"
+            TYPE="ksu-next-susfs"
+            ARTIFACT_LABEL="ksu-next-susfs"
           else
-            TYPE="noksu"
+            TYPE="stock"
+            ARTIFACT_LABEL="stock"
           fi
           echo "BUILD_DATE=${DATE}" >> $GITHUB_ENV
           echo "BUILD_TYPE=${TYPE}" >> $GITHUB_ENV
+          echo "ARTIFACT_LABEL=${ARTIFACT_LABEL}" >> $GITHUB_ENV
 
           AOSP_SRC_ZIP=$(find apasitu -maxdepth 1 -name "APTKernel_AOSP_*.zip" | head -1)
           if [ -z "$AOSP_SRC_ZIP" ] || [ ! -f "$AOSP_SRC_ZIP" ]; then
@@ -242,7 +240,6 @@ jobs:
           rm -rf "$WORKDIR"
           cp -r "$AK3_DIR" "$WORKDIR"
 
-          # Final sanity check on what is actually going into the zip
           CORE_LINES=$(wc -l < "$WORKDIR/tools/ak3-core.sh")
           UB_LINES=$(wc -l < "$WORKDIR/META-INF/com/google/android/update-binary")
           echo "ak3-core.sh in \$WORKDIR: $CORE_LINES lines"
@@ -280,7 +277,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: PitchKernel-munch-${{ github.run_number }}
+          name: PitchKernel-munch-${{ env.ARTIFACT_LABEL }}-${{ github.run_number }}
           path: ${{ env.ZIP_NAME }}
           if-no-files-found: error
           retention-days: 7
@@ -293,7 +290,7 @@ jobs:
           ZIP_PATH: ${{ github.workspace }}/${{ env.ZIP_NAME }}
           ZIP_NAME: ${{ env.ZIP_NAME }}
           KERNEL_VERSION: "4.19"
-          ROOT_SOLUTION: ${{ inputs.ksu && 'RESUKISU' || 'VANILLA' }}
+          ROOT_SOLUTION: ${{ inputs.ksu && 'KSU_NEXT' || 'VANILLA' }}
           SUSFS_ENABLED: ${{ inputs.ksu }}
           KERNEL_BRANCH: "default (apasitu)"
           COMPILER_STRING: "ZyCromerZ Clang 16.0.6"
@@ -315,7 +312,7 @@ jobs:
             **Toolchain:** ZyCromerZ Clang 16.0.6
 
             ### Features
-            - ReSukiSU + SUSFS (${{ inputs.ksu && 'enabled' || 'disabled' }})
+            - KernelSU Next + SUSFS (${{ inputs.ksu && 'enabled' || 'disabled' }})
             - TCP BBR congestion control
             - ROM auto-detection: MIUI/HyperOS or AOSP
             - CPU prime core ceiling: 2841600 kHz (hardware-enforced by qcom-cpufreq-hw driver)
