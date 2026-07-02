@@ -94,11 +94,33 @@ jobs:
           rm clang.tar.gz
 
       - name: Clone apasitu kernel source
+        env:
+          # PINNED ON PURPOSE. Do not remove -b / add --no-single-branch back.
+          #
+          # Real incident (found by log/repo audit, 2026-07-03): this step used to
+          # clone with --no-single-branch and no -b flag, which pulls whatever
+          # AstideLabs' default HEAD branch happens to be. At the time of the audit
+          # that was `android16-aptusitu` — NOT `android16-aptusitu-new`, which is
+          # the branch this project's docs/CI have always assumed. Diffed the two:
+          # 6,597 files / ~1.39M lines different. They are not close variants.
+          # Every build run before this fix may have silently built the wrong tree
+          # with no error, because both branches have a valid build.sh/build-miui.sh
+          # and both build successfully — there's no structural signal that you got
+          # the wrong one. If AstideLabs' default branch changes again, or if you
+          # deliberately mean to track a different branch, that's fine — just make
+          # the change here, explicitly, and update KERNEL_SOURCE_BRANCH below to
+          # match. Do not go back to letting `git clone` pick for you.
+          KERNEL_SOURCE_BRANCH: android16-aptusitu-new
         run: |
-          git clone --depth=1 --no-single-branch \
+          echo "Cloning branch: ${KERNEL_SOURCE_BRANCH} (pinned explicitly — see step comment)"
+          git clone --depth=1 --single-branch -b "${KERNEL_SOURCE_BRANCH}" \
             https://github.com/AstideLabs/android_kernel_xiaomi_sm8250.git \
             apasitu
           ls apasitu/build.sh apasitu/build-miui.sh
+          RESOLVED_SHA=$(git -C apasitu rev-parse --short HEAD)
+          echo "KERNEL_SOURCE_BRANCH=${KERNEL_SOURCE_BRANCH}" >> $GITHUB_ENV
+          echo "KERNEL_SOURCE_SHA=${RESOLVED_SHA}" >> $GITHUB_ENV
+          echo "Resolved to commit: ${RESOLVED_SHA}"
 
       - name: Set PitchKernel name
         run: |
@@ -394,7 +416,12 @@ jobs:
           KERNEL_VERSION: "4.19"
           ROOT_SOLUTION: ${{ inputs.ksu && env.ROOT_SOLUTION_KEY || 'VANILLA' }}
           SUSFS_ENABLED: ${{ inputs.ksu }}
-          KERNEL_BRANCH: "default (apasitu)"
+          # Was hardcoded "default (apasitu)" — meant nothing and hid the exact
+          # branch/commit mismatch bug fixed in the "Clone apasitu kernel source"
+          # step above. Now reflects what was actually resolved and cloned this
+          # run, so a future branch drift shows up in the Telegram message
+          # instead of being invisible again.
+          KERNEL_BRANCH: "${{ env.KERNEL_SOURCE_BRANCH }}@${{ env.KERNEL_SOURCE_SHA }}"
           COMPILER_STRING: "ZyCromerZ Clang 16.0.6"
           KERNEL_SRC: "apasitu"
         run: |
@@ -410,7 +437,7 @@ jobs:
 
             **Build date:** ${{ env.BUILD_DATE }}
             **Type:** ${{ env.BUILD_TYPE }}
-            **Base:** AstideLabs/android_kernel_xiaomi_sm8250
+            **Base:** AstideLabs/android_kernel_xiaomi_sm8250 @ `${{ env.KERNEL_SOURCE_BRANCH }}` (`${{ env.KERNEL_SOURCE_SHA }}`)
             **Toolchain:** ZyCromerZ Clang 16.0.6
 
             ### Features
