@@ -5,8 +5,16 @@
 # Adapted from LuminaireProtocol/telegram.sh
 # Source this script after build; requires env vars:
 #   ZIP_PATH, ZIP_NAME, KERNEL_VERSION
-#   ROOT_SOLUTION (RESUKISU|VANILLA)
-#   SUSFS_ENABLED (true|false)
+#   ROOT_SOLUTION (RESUKISU|KSU_NEXT|SUKISU|VANILLA) — driven by build.yml's
+#     env.ROOT_SOLUTION_KEY. History: shipped as RESUKISU, briefly and
+#     incorrectly switched to KSU_NEXT without a working susfs patch step
+#     (see build.yml comments), reverted back to RESUKISU. This case
+#     statement supports all values so it doesn't need touching again if
+#     the provider changes — only build.yml's env block should need editing.
+#   SUSFS_ENABLED (true|false) — NOTE: this only reflects the `ksu` workflow
+#     toggle, not whether susfs4ksu patches were actually applied. build.yml
+#     has no explicit SUSFS patching step as of this writing — verify before
+#     trusting this label.
 #   KERNEL_SRC, KERNEL_BRANCH, COMPILER_STRING
 # ======================================================
 
@@ -37,6 +45,7 @@ if [ "$ZIP_SIZE_BYTES" -gt "$TELEGRAM_MAX_FILE_BYTES" ]; then
 fi
 
 case "${ROOT_SOLUTION:-VANILLA}" in
+    KSU_NEXT) ROOT_DISPLAY="KernelSU-Next" ;;
     RESUKISU) ROOT_DISPLAY="ReSukiSU" ;;
     SUKISU)   ROOT_DISPLAY="SukiSU"   ;;
     VANILLA)  ROOT_DISPLAY="Vanilla"  ;;
