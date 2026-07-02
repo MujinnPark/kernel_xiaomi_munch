@@ -11,7 +11,14 @@ on:
         options:
           - build.sh
       ksu:
-        description: 'Enable KernelSU Next + SUSFS'
+        # NOTE: this description is a static string — GitHub Actions evaluates
+        # workflow_dispatch.inputs at trigger-definition time, before any job
+        # env exists, so it CANNOT reference env.ROOT_PROVIDER below. If the
+        # root provider changes again, this line must be edited by hand.
+        # That is exactly the kind of manual, easy-to-forget step that caused
+        # this repo to say "KernelSU Next" in five places after switching
+        # back to ReSukiSU. Don't forget this one too.
+        description: 'Enable ReSukiSU + SUSFS'
         required: true
         type: boolean
         default: true
@@ -23,6 +30,18 @@ jobs:
   build:
     name: PitchKernel munch
     runs-on: ubuntu-latest
+    env:
+      # SINGLE SOURCE OF TRUTH for which root provider this pipeline builds.
+      # Every label below (Telegram start message, artifact/zip name, telegram.sh
+      # caption, GitHub release body) reads from these two variables instead of
+      # hardcoding the provider name separately in each spot. This exists because
+      # a prior revert (KernelSU-Next -> ReSukiSU) fixed apasitu/build.sh but left
+      # five independent hardcoded "KernelSU Next" strings scattered across this
+      # file, and every one of them silently kept lying after the code was fixed.
+      # If the root provider ever changes again: change these two lines, nothing
+      # else in this file should need to be touched.
+      ROOT_PROVIDER: ReSukiSU        # human-readable, used in messages/labels
+      ROOT_SOLUTION_KEY: RESUKISU    # machine key, must match a case in telegram.sh
 
     steps:
       - name: Checkout PitchKernel repo
@@ -33,7 +52,7 @@ jobs:
       - name: Notify build started
         run: |
           if [ "${{ inputs.ksu }}" == "true" ]; then
-            LABEL="KernelSU Next + SUSFS"
+            LABEL="${{ env.ROOT_PROVIDER }} + SUSFS"
           else
             LABEL="NoKSU"
           fi
@@ -252,8 +271,8 @@ jobs:
         run: |
           DATE=$(date +%Y%m%d-%H%M)
           if [ "${{ inputs.ksu }}" == "true" ]; then
-            TYPE="ksu-next-susfs"
-            ARTIFACT_LABEL="ksu-next-susfs"
+            TYPE="$(echo "${{ env.ROOT_PROVIDER }}" | tr '[:upper:]' '[:lower:]')-susfs"
+            ARTIFACT_LABEL="$TYPE"
           else
             TYPE="stock"
             ARTIFACT_LABEL="stock"
@@ -373,7 +392,7 @@ jobs:
           ZIP_PATH: ${{ github.workspace }}/${{ env.ZIP_NAME }}
           ZIP_NAME: ${{ env.ZIP_NAME }}
           KERNEL_VERSION: "4.19"
-          ROOT_SOLUTION: ${{ inputs.ksu && 'KSU_NEXT' || 'VANILLA' }}
+          ROOT_SOLUTION: ${{ inputs.ksu && env.ROOT_SOLUTION_KEY || 'VANILLA' }}
           SUSFS_ENABLED: ${{ inputs.ksu }}
           KERNEL_BRANCH: "default (apasitu)"
           COMPILER_STRING: "ZyCromerZ Clang 16.0.6"
@@ -395,7 +414,7 @@ jobs:
             **Toolchain:** ZyCromerZ Clang 16.0.6
 
             ### Features
-            - KernelSU Next + SUSFS (${{ inputs.ksu && 'enabled' || 'disabled' }})
+            - ${{ env.ROOT_PROVIDER }} + SUSFS (${{ inputs.ksu && 'enabled' || 'disabled' }})
             - TCP BBR congestion control
             - ROM auto-detection: MIUI/HyperOS or AOSP
             - CPU prime core ceiling: 2841600 kHz (hardware-enforced by qcom-cpufreq-hw driver)
