@@ -1,0 +1,411 @@
+name: Build PitchKernel
+
+on:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: 'Build script — only build.sh (AOSP+MIUI dual zip) is currently supported. build-miui.sh (MIUI-only) is not wired into the packaging step yet.'
+        required: true
+        default: 'build.sh'
+        type: choice
+        options:
+          - build.sh
+      ksu:
+        description: 'Enable KernelSU Next + SUSFS'
+        required: true
+        type: boolean
+        default: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: PitchKernel munch
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout PitchKernel repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Notify build started
+        run: |
+          if [ "${{ inputs.ksu }}" == "true" ]; then
+            LABEL="KernelSU Next + SUSFS"
+          else
+            LABEL="NoKSU"
+          fi
+          curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage" \
+            -d "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+            -d "message_thread_id=${{ secrets.TELEGRAM_THREAD_ID_EVENT }}" \
+            -d "disable_web_page_preview=true" \
+            -d "text=🔨 PitchKernel — Build Started%0ADevice: munch (Poco F4)%0AType: ${LABEL} — ${{ inputs.script }}%0ADate: $(date +'%Y-%m-%d %H:%M UTC')" | jq '.ok'
+
+      - name: Cleanup disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc \
+            "/usr/local/share/boost" "$AGENT_TOOLSDIRECTORY"
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential git curl wget \
+            bison flex zip bc cpio libssl-dev ccache \
+            python-is-python3 gcc-arm-linux-gnueabi \
+            device-tree-compiler
+
+      - name: Setup ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache_mikernel
+          key: pitchkernel-ccache-munch-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            pitchkernel-ccache-munch-${{ github.ref_name }}-
+            pitchkernel-ccache-munch-
+            pitchkernel-ccache-
+
+      - name: Setup ZyCromerZ Clang 16
+        run: |
+          mkdir -p $HOME/zyc-clang
+          wget -q https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260510-release/Clang-16.0.6-20260510.tar.gz \
+            -O clang.tar.gz
+          tar -zxf clang.tar.gz -C $HOME/zyc-clang
+          rm clang.tar.gz
+
+      - name: Clone apasitu kernel source
+        run: |
+          git clone --depth=1 --no-single-branch \
+            https://github.com/AstideLabs/android_kernel_xiaomi_sm8250.git \
+            apasitu
+          ls apasitu/build.sh apasitu/build-miui.sh
+
+      - name: Set PitchKernel name
+        run: |
+          echo "-pitchkernel" > apasitu/localversion-st
+          echo "" > apasitu/localversion-cip
+
+      - name: Point AnyKernel3 to PitchKernel fork
+        run: |
+          sed -i 's#https://github.com/AstideLabs/AnyKernel3#https://github.com/MujinnPark/AnyKernel3#' \
+            apasitu/build.sh apasitu/build-miui.sh
+
+      - name: Patch defconfig
+        run: |
+          DEFCONFIG="apasitu/arch/arm64/configs/munch_defconfig"
+          [ -f "$DEFCONFIG" ] || { echo "ERROR: $DEFCONFIG not found"; exit 1; }
+
+          sed -i 's/CONFIG_LOCALVERSION="-aptusitu-perf"/CONFIG_LOCALVERSION=""/' "$DEFCONFIG"
+
+          cd apasitu
+          ./scripts/config --file arch/arm64/configs/munch_defconfig \
+            --disable LOCALVERSION_AUTO
+          cd ..
+
+          cd apasitu
+          ./scripts/config --file arch/arm64/configs/munch_defconfig \
+            --disable UCLAMP_TASK \
+            --disable UCLAMP_TASK_GROUP
+          cd ..
+
+          {
+            echo ""
+            echo "# TCP congestion control - PitchKernel"
+            echo "CONFIG_TCP_CONG_ADVANCED=y"
+            echo "CONFIG_TCP_CONG_BBR=y"
+            echo "CONFIG_TCP_CONG_WESTWOOD=y"
+            echo "CONFIG_NET_SCH_FQ=y"
+            echo 'CONFIG_DEFAULT_TCP_CONG="bbr"'
+            echo ""
+            echo "# I/O scheduler"
+            echo "CONFIG_MQ_IOSCHED_DEADLINE=y"
+            echo "CONFIG_IOSCHED_DEADLINE=y"
+            echo 'CONFIG_DEFAULT_IOSCHED="mq-deadline"'
+          } >> "$DEFCONFIG"
+
+          echo "Patched defconfig (tail -20):"
+          tail -20 "$DEFCONFIG"
+          echo ""
+          echo "Verifying uclamp directives:"
+          grep -E "UCLAMP_TASK|LOCALVERSION_AUTO" "$DEFCONFIG" || echo "WARNING: grep found nothing"
+
+      - name: Build kernel
+        env:
+          KBUILD_BUILD_TIMESTAMP: ''
+          KBUILD_BUILD_USER: pitchkernel
+          KBUILD_BUILD_HOST: github-actions
+          CCACHE_DIR: ~/.cache/ccache_mikernel
+          CCACHE_MAXSIZE: 5G
+          CCACHE_COMPRESS: '1'
+          CCACHE_COMPRESSLEVEL: '1'
+          CCACHE_SLOPPINESS: file_stat_matches,locale,time_macros
+        run: |
+          cd apasitu
+          chmod +x build.sh build-miui.sh
+          if [ "${{ inputs.ksu }}" == "true" ]; then
+            bash ${{ inputs.script }} munch ksu
+          else
+            bash ${{ inputs.script }} munch
+          fi
+
+      - name: Verify SUSFS actually compiled in
+        run: |
+          # This step exists because of a real incident: a prior CI change swapped
+          # the root provider in apasitu/build.sh (ReSukiSU -> KernelSU-Next) without
+          # touching the `scripts/config -e KSU_SUSFS ...` block that follows it.
+          # KSU_SUSFS is not a real Kconfig symbol unless the root provider's tree
+          # actually contains susfs source. scripts/config does not validate against
+          # Kconfig — it blindly writes the .config line — and kbuild silently drops
+          # unrecognized symbols during syncconfig. Result: the build succeeds, the
+          # Image is produced, every structural check passes, and the kernel ships
+          # with zero SUSFS code compiled in while everything *labels* it as enabled.
+          # That shipped silently for an unknown number of releases. This step is the
+          # gate that should have existed from the start: check the real .config,
+          # not a label, not a filename, not a comment.
+          if [ "${{ inputs.ksu }}" != "true" ]; then
+            echo "ksu=false — SUSFS not expected, skipping verification."
+            exit 0
+          fi
+
+          CONFIG_FILE="apasitu/out/.config"
+          [ -f "$CONFIG_FILE" ] || { echo "FATAL: $CONFIG_FILE not found — build may not have produced a config"; exit 1; }
+
+          echo "Checking $CONFIG_FILE for KSU and SUSFS symbols..."
+          MISSING=0
+          for SYM in CONFIG_KSU CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_SPOOF_UNAME; do
+            if grep -q "^${SYM}=y" "$CONFIG_FILE"; then
+              echo "  OK: ${SYM}=y"
+            else
+              echo "  MISSING: ${SYM} is not set to y in the generated .config"
+              MISSING=1
+            fi
+          done
+
+          SUSFS_HEADER="apasitu/include/linux/susfs.h"
+          if [ -f "$SUSFS_HEADER" ]; then
+            echo "  OK: $SUSFS_HEADER exists"
+          else
+            echo "  MISSING: $SUSFS_HEADER does not exist — susfs source was never added to the tree"
+            MISSING=1
+          fi
+
+          if [ "$MISSING" -eq 1 ]; then
+            echo ""
+            echo "FATAL: ksu=true was requested but SUSFS is not actually compiled in."
+            echo "Do not let this build ship as a 'SUSFS' release. Check apasitu/build.sh:"
+            echo "  - does the ksu-enabled branch clone a root provider whose tree includes susfs source?"
+            echo "  - if you changed the root provider (ReSukiSU/SukiSU/KernelSU/KernelSU-Next), the"
+            echo "    'scripts/config -e KSU_SUSFS ...' block only works if that provider bundles susfs"
+            echo "    OR you added an explicit susfs4ksu patch step before this build ran."
+            exit 1
+          fi
+
+          echo "SUSFS verification passed — real, not just labeled."
+
+      - name: Verify ak3-core.sh is complete
+        run: |
+          TARGET="apasitu/anykernel/tools/ak3-core.sh"
+          [ -f "$TARGET" ] || { echo "ERROR: $TARGET not found — build may have failed"; exit 1; }
+          LINES=$(wc -l < "$TARGET")
+          echo "ak3-core.sh: $LINES lines"
+          if [ "$LINES" -lt 900 ]; then
+            echo "FATAL: ak3-core.sh is truncated at $LINES lines."
+            echo "The MujinnPark/AnyKernel3 fork has a broken tools/ak3-core.sh."
+            echo "Fix the fork (push upstream file), do NOT add a curl workaround here."
+            echo ""
+            echo "Quick fix:"
+            echo "  git clone https://github.com/MujinnPark/AnyKernel3.git"
+            echo "  cd AnyKernel3"
+            echo "  curl -fsSL https://raw.githubusercontent.com/osm0sis/AnyKernel3/master/tools/ak3-core.sh -o tools/ak3-core.sh"
+            echo "  git add tools/ak3-core.sh && git commit -m 'fix: restore complete ak3-core.sh' && git push"
+            exit 1
+          fi
+          bash -n "$TARGET" || { echo "FATAL: ak3-core.sh has a syntax error"; exit 1; }
+          echo "ak3-core.sh OK ($LINES lines, passes bash -n)"
+
+      - name: Overlay PitchKernel AnyKernel3 files
+        run: |
+          AK3_BUILT="apasitu/anykernel"
+          AK3_OURS="PitchKernel/anykernel"
+          [ -d "$AK3_BUILT" ] || { echo "ERROR: $AK3_BUILT not found — build failed"; exit 1; }
+          [ -d "$AK3_OURS"  ] || { echo "ERROR: $AK3_OURS not found — missing from repo"; exit 1; }
+
+          echo "Overlaying PitchKernel anykernel files over cloned MujinnPark/AnyKernel3..."
+          cp -v "$AK3_OURS/anykernel.sh" "$AK3_BUILT/anykernel.sh"
+          mkdir -p "$AK3_BUILT/patch"
+          cp -v "$AK3_OURS/patch/pitchkernel_cpufreq.sh" "$AK3_BUILT/patch/pitchkernel_cpufreq.sh"
+          cp -v "$AK3_OURS/patch/pitchkernel_root_hide.sh" "$AK3_BUILT/patch/pitchkernel_root_hide.sh"
+          chmod 755 "$AK3_BUILT/patch/pitchkernel_cpufreq.sh"
+          chmod 755 "$AK3_BUILT/patch/pitchkernel_root_hide.sh"
+
+          echo "Verifying overlaid files:"
+          grep -m1 "PitchKernel by Mujinn" "$AK3_BUILT/anykernel.sh" \
+            || { echo "ERROR: anykernel.sh does not look like our version"; exit 1; }
+          grep -m1 "PitchKernel" "$AK3_BUILT/patch/pitchkernel_cpufreq.sh" \
+            || { echo "ERROR: pitchkernel_cpufreq.sh missing expected content"; exit 1; }
+          test -f "$AK3_BUILT/patch/pitchkernel_root_hide.sh" \
+            || { echo "ERROR: pitchkernel_root_hide.sh was not overlaid"; exit 1; }
+          echo "Overlay complete."
+
+      - name: Package zip
+        run: |
+          DATE=$(date +%Y%m%d-%H%M)
+          if [ "${{ inputs.ksu }}" == "true" ]; then
+            TYPE="ksu-next-susfs"
+            ARTIFACT_LABEL="ksu-next-susfs"
+          else
+            TYPE="stock"
+            ARTIFACT_LABEL="stock"
+          fi
+          echo "BUILD_DATE=${DATE}" >> $GITHUB_ENV
+          echo "BUILD_TYPE=${TYPE}" >> $GITHUB_ENV
+          echo "ARTIFACT_LABEL=${ARTIFACT_LABEL}" >> $GITHUB_ENV
+
+          AOSP_SRC_ZIP=$(find apasitu -maxdepth 1 -name "APTKernel_AOSP_*.zip" | head -1)
+          if [ -z "$AOSP_SRC_ZIP" ] || [ ! -f "$AOSP_SRC_ZIP" ]; then
+            echo "ERROR: APTKernel_AOSP_*.zip not found. Available zips:"
+            find apasitu -maxdepth 1 -name "*.zip"
+            exit 1
+          fi
+          echo "AOSP source: $AOSP_SRC_ZIP ($(du -sh $AOSP_SRC_ZIP | cut -f1))"
+
+          # build.sh (the "AOSP+MIUI dual zip" path) also produces APTKernel_MIUI_*.zip
+          # with its own Image/dtb/dtbo.img — these are NOT interchangeable with the
+          # AOSP ones (different config, different dtbo). Both must be present for
+          # the dual-image AK3 flash pattern to actually work for MIUI/HyperOS users.
+          MIUI_SRC_ZIP=$(find apasitu -maxdepth 1 -name "APTKernel_MIUI_*.zip" | head -1)
+          if [ -z "$MIUI_SRC_ZIP" ] || [ ! -f "$MIUI_SRC_ZIP" ]; then
+            echo "ERROR: APTKernel_MIUI_*.zip not found. Available zips:"
+            find apasitu -maxdepth 1 -name "*.zip"
+            echo "If you intentionally ran a build that skips MIUI, this packaging step"
+            echo "needs a --skip-miui flag added — it currently assumes both zips exist."
+            exit 1
+          fi
+          echo "MIUI source: $MIUI_SRC_ZIP ($(du -sh $MIUI_SRC_ZIP | cut -f1))"
+
+          mkdir -p /tmp/kernel_files/aosp /tmp/kernel_files/miui
+          unzip -q -j "$AOSP_SRC_ZIP" \
+            "kernels/aosp/Image" \
+            "kernels/aosp/dtb" \
+            "kernels/aosp/dtbo.img" \
+            -d /tmp/kernel_files/aosp/
+          unzip -q -j "$MIUI_SRC_ZIP" \
+            "kernels/miui/Image" \
+            "kernels/miui/dtb" \
+            "kernels/miui/dtbo.img" \
+            -d /tmp/kernel_files/miui/
+
+          for os in aosp miui; do
+            for f in Image dtb dtbo.img; do
+              if [ ! -f "/tmp/kernel_files/$os/$f" ]; then
+                echo "ERROR: $f not found for $os"
+                exit 1
+              fi
+            done
+          done
+          echo "Kernel files:"
+          ls -lh /tmp/kernel_files/aosp /tmp/kernel_files/miui
+
+          AK3_DIR="apasitu/anykernel"
+          [ -d "$AK3_DIR" ] || { echo "ERROR: $AK3_DIR not found"; ls apasitu/; exit 1; }
+
+          WORKDIR="/tmp/ak3_build"
+          rm -rf "$WORKDIR"
+          cp -r "$AK3_DIR" "$WORKDIR"
+
+          CORE_LINES=$(wc -l < "$WORKDIR/tools/ak3-core.sh")
+          UB_LINES=$(wc -l < "$WORKDIR/META-INF/com/google/android/update-binary")
+          echo "ak3-core.sh in \$WORKDIR: $CORE_LINES lines"
+          echo "update-binary in \$WORKDIR: $UB_LINES lines"
+          [ "$CORE_LINES" -gt 900 ] || { echo "FATAL: ak3-core.sh truncated in WORKDIR"; exit 1; }
+          bash -n "$WORKDIR/tools/ak3-core.sh" || { echo "FATAL: ak3-core.sh syntax error"; exit 1; }
+          bash -n "$WORKDIR/META-INF/com/google/android/update-binary" || \
+            { echo "FATAL: update-binary syntax error"; exit 1; }
+
+          rm -rf "$WORKDIR/kernels"
+          mkdir -p "$WORKDIR/kernels/aosp" "$WORKDIR/kernels/miui"
+          cp /tmp/kernel_files/aosp/Image    "$WORKDIR/kernels/aosp/"
+          cp /tmp/kernel_files/aosp/dtb      "$WORKDIR/kernels/aosp/"
+          cp /tmp/kernel_files/aosp/dtbo.img "$WORKDIR/kernels/aosp/"
+          cp /tmp/kernel_files/miui/Image    "$WORKDIR/kernels/miui/"
+          cp /tmp/kernel_files/miui/dtb      "$WORKDIR/kernels/miui/"
+          cp /tmp/kernel_files/miui/dtbo.img "$WORKDIR/kernels/miui/"
+
+          [ -f "$WORKDIR/kernels/aosp/Image" ] || \
+            { echo "ERROR: AOSP Image missing after copy"; exit 1; }
+          [ -f "$WORKDIR/kernels/miui/Image" ] || \
+            { echo "ERROR: MIUI Image missing after copy"; exit 1; }
+
+          # Each ROM's own dtbo — do NOT cross-copy AOSP's dtbo to the MIUI slot or
+          # vice versa, they come from different builds with different configs.
+          cp /tmp/kernel_files/aosp/dtbo.img "$WORKDIR/munch-aosp-dtbo.img"
+          cp /tmp/kernel_files/miui/dtbo.img "$WORKDIR/munch-miui-dtbo.img"
+
+          ZIP_NAME="PitchKernel-${TYPE}-munch-${DATE}.zip"
+
+          cd "$WORKDIR"
+          zip -r9 "$GITHUB_WORKSPACE/$ZIP_NAME" . \
+            -x ".git/*" -x "*.gitignore" >/dev/null
+
+          unzip -l "$GITHUB_WORKSPACE/$ZIP_NAME" | grep -q "kernels/aosp/Image" || \
+            { echo "ERROR: kernels/aosp/Image missing from $ZIP_NAME"; exit 1; }
+          unzip -l "$GITHUB_WORKSPACE/$ZIP_NAME" | grep -q "kernels/miui/Image" || \
+            { echo "ERROR: kernels/miui/Image missing from $ZIP_NAME"; exit 1; }
+
+          cd "$GITHUB_WORKSPACE"
+          echo "Packaged: $ZIP_NAME ($(du -sh $ZIP_NAME | cut -f1))"
+          echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PitchKernel-munch-${{ env.ARTIFACT_LABEL }}-${{ github.run_number }}
+          path: ${{ env.ZIP_NAME }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Send artifact to Telegram
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_THREAD_ID_ARTIFACT: ${{ secrets.TELEGRAM_THREAD_ID_ARTIFACT }}
+          ZIP_PATH: ${{ github.workspace }}/${{ env.ZIP_NAME }}
+          ZIP_NAME: ${{ env.ZIP_NAME }}
+          KERNEL_VERSION: "4.19"
+          ROOT_SOLUTION: ${{ inputs.ksu && 'KSU_NEXT' || 'VANILLA' }}
+          SUSFS_ENABLED: ${{ inputs.ksu }}
+          KERNEL_BRANCH: "default (apasitu)"
+          COMPILER_STRING: "ZyCromerZ Clang 16.0.6"
+          KERNEL_SRC: "apasitu"
+        run: |
+          source PitchKernel/release/telegram.sh
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: PitchKernel-munch-${{ env.BUILD_DATE }}
+          name: "PitchKernel ${{ env.BUILD_DATE }} — munch"
+          body: |
+            ## PitchKernel — Poco F4 / Redmi K40S (munch)
+
+            **Build date:** ${{ env.BUILD_DATE }}
+            **Type:** ${{ env.BUILD_TYPE }}
+            **Base:** AstideLabs/android_kernel_xiaomi_sm8250
+            **Toolchain:** ZyCromerZ Clang 16.0.6
+
+            ### Features
+            - KernelSU Next + SUSFS (${{ inputs.ksu && 'enabled' || 'disabled' }})
+            - TCP BBR congestion control
+            - ROM auto-detection: MIUI/HyperOS or AOSP
+            - CPU prime core ceiling: 2841600 kHz (hardware-enforced by qcom-cpufreq-hw driver)
+
+            ### Installation
+            Flash via OrangeFox or TWRP.
+            Select ROM type during flash (auto-detected from zip name, volume-key fallback).
+            cpufreq script placed in `/data/adb/post-fs-data.d/` automatically — no separate module needed.
+          files: ${{ env.ZIP_NAME }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+          draft: false
+          prerelease: false
+          
