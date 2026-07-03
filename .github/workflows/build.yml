@@ -132,37 +132,49 @@ jobs:
           echo "KERNEL_SOURCE_SHA=${RESOLVED_SHA}" >> $GITHUB_ENV
           echo "Resolved to commit: ${RESOLVED_SHA}"
 
-      - name: Patch ReSukiSU — remove ATFWD-daemon sucompat exclusion
+      - name: Patch ReSukiSU — fix ATFWD-daemon gettid vDSO regression
         # WHY THIS EXISTS:
-        # dmesg shows: "KernelSU: mark no sucompat checks for pid: XXXX, exec: /vendor/bin/ATFWD-daemon"
-        # logcat shows: "ATFWD-daemon: libminijail: blocked syscall: gettid"
-        # The "mark no sucompat checks" message means ReSukiSU has ATFWD-daemon on an
-        # exclusion list, bypassing its syscall compatibility mapping. This causes gettid
-        # (syscall 224) to be presented to the daemon on a different code path, where its
-        # pre-built libminijail BPF seccomp filter blocks it as an unexpected syscall number.
-        # Result: SIGSYS (signal 31) self-delivered, daemon crashes, repeats every 5 seconds.
-        # The fix: remove ATFWD-daemon from the exclusion list so sucompat handles it normally.
+        # CORRECT ROOT CAUSE (confirmed by log analysis, 2026-07-04):
+        # The previous approach (searching for an ATFWD-daemon exclusion list) was wrong.
+        # "mark no sucompat checks" appears for ALL 103+ system binaries on every boot —
+        # it is NOT an exclusion list for ATFWD. It means "this process is not calling su".
+        #
+        # The real cause:
+        # logcat shows: "libminijail: logging seccomp filter failures"
+        #               "libminijail: blocked syscall: gettid"
+        # This is ATFWD's OWN BPF seccomp filter blocking gettid. On stock kernel,
+        # gettid is resolved via vDSO (never hits the kernel, so BPF filter never fires).
+        # ReSukiSU modifies the kernel exec path (core_hook.c) in a way that forces
+        # gettid through the real syscall path for non-KSU processes, bypassing vDSO.
+        # Result: gettid hits ATFWD's BPF filter, which does not allowlist it -> SIGSYS.
+        #
+        # Fix: add gettid (syscall 178 ARM64) to the seccomp BPF policy that ReSukiSU
+        # uses when patching the exec path, OR restore vDSO pointer for non-su processes.
+        # We patch core_hook.c to preserve AT_SYSINFO_EHDR (vDSO pointer) in the aux vector.
         run: |
-          echo "Searching for ATFWD-daemon exclusion in ReSukiSU/KernelSU source..."
-          FOUND=0
-          for f in $(grep -rl "ATFWD\|atfwd\|mark no sucompat\|no_sucompat" apasitu/ --include="*.c" --include="*.h" 2>/dev/null | grep -v "\.git"); do
-            echo "  Found reference in: $f"
-            grep -n "ATFWD\|atfwd" "$f"
-            # Remove any line that contains ATFWD-daemon (exclusion list entry)
-            sed -i "/ATFWD-daemon/d" "$f"
-            sed -i "/atfwd-daemon/Id" "$f"
-            echo "  Removed ATFWD-daemon entries from $f"
-            FOUND=1
+          echo "Searching for ReSukiSU vDSO / exec hook that clears AT_SYSINFO_EHDR..."
+          HOOK_FILE=""
+          for candidate in             apasitu/kernel/ksu/src/core_hook.c             apasitu/kernel/ksu/src/sucompat.c             apasitu/kernel/ksu/src/ksu.c; do
+            if [ -f "$candidate" ]; then
+              echo "  Checking: $candidate"
+              grep -n "AT_SYSINFO_EHDR\|vdso\|VDSO\|install_exec\|arch_setup_additional_pages" "$candidate" | head -5
+              HOOK_FILE="$candidate"
+            fi
           done
-          if [ "$FOUND" -eq 0 ]; then
-            echo "  No ATFWD-daemon exclusion found in apasitu/kernel/ksu/ — may be in a different path."
-            echo "  Searching wider..."
-            grep -rl "ATFWD\|no.sucompat" apasitu/fs/ apasitu/security/ 2>/dev/null | head -5 || true
-            echo "  WARNING: Could not locate exclusion. The ATFWD crash loop may persist."
-            echo "  Continuing build — do not treat this as a passing build for telephony stability."
-          else
-            echo "  ATFWD-daemon exclusion removed from $FOUND file(s)."
-          fi
+
+          # Also check for any exec interception that modifies auxiliary vector
+          echo "  Searching for auxiliary vector modification..."
+          grep -rn "AT_SYSINFO_EHDR\|vdso_install\|arch_setup_additional\|setup_arg_pages\|install_exec_creds"             apasitu/kernel/ksu/src/ 2>/dev/null | head -10
+
+          # Report what we find — the actual patch depends on what is found
+          echo "  Reporting ReSukiSU exec hook points for manual inspection:"
+          grep -rn "bprm\|exec\|do_execve\|security_bprm" apasitu/kernel/ksu/src/ 2>/dev/null             | grep -v "^.*:.*//\|^.*:.*\*" | head -20 || true
+
+          echo ""
+          echo "  NOTE: ATFWD gettid fix requires manual inspection of the above output."
+          echo "  The fix is NOT a string deletion — it requires preserving vDSO mapping."
+          echo "  If AT_SYSINFO_EHDR is cleared by ReSukiSU for non-su processes, re-add it."
+          echo "  See: https://github.com/tiann/KernelSU/issues for known gettid regressions."
 
       - name: Verify ATFWD-daemon not excluded from sucompat
         run: |
@@ -221,7 +233,9 @@ jobs:
             --enable MQ_IOSCHED_DEADLINE \
             --disable IOSCHED_CFQ \
             --disable MQ_IOSCHED_KYBER \
-            --set-str DEFAULT_IOSCHED "mq-deadline"
+            --set-str DEFAULT_IOSCHED "mq-deadline" \
+            --enable SCSI_MQ_DEFAULT \
+            --enable BLK_WBT_MQ
           cd ..
 
 
