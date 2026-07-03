@@ -210,11 +210,19 @@ jobs:
             echo "CONFIG_NET_SCH_FQ=y"
             echo 'CONFIG_DEFAULT_TCP_CONG="bbr"'
             echo ""
-            echo "# I/O scheduler"
+            echo "# I/O scheduler — PitchKernel"
+            echo "# CONFIG_IOSCHED_CFQ is not set"
             echo "CONFIG_MQ_IOSCHED_DEADLINE=y"
-            echo "CONFIG_IOSCHED_DEADLINE=y"
             echo 'CONFIG_DEFAULT_IOSCHED="mq-deadline"'
           } >> "$DEFCONFIG"
+
+          cd apasitu
+          ./scripts/config --file arch/arm64/configs/munch_defconfig \\
+            --enable MQ_IOSCHED_DEADLINE \\
+            --disable IOSCHED_CFQ \\
+            --disable MQ_IOSCHED_KYBER \\
+            --set-str DEFAULT_IOSCHED "mq-deadline"
+          cd ..
 
 
           # Thermal subsystem — fix for ThermalHalWrapper HAL read failures
