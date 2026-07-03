@@ -62,7 +62,7 @@ done
 for cpu in 0 1 2 3 4 5 6 7; do
     RATE_PATH="/sys/devices/system/cpu/cpu${cpu}/cpufreq/schedutil/rate_limit_us"
     if [ -f "$RATE_PATH" ]; then
-        echo "200" > "$RATE_PATH" 2>/dev/null
+        echo "500" > "$RATE_PATH" 2>/dev/null
     fi
 done
 

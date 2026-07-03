@@ -62,6 +62,16 @@ jobs:
             -d "disable_web_page_preview=true" \
             -d "text=🔨 PitchKernel — Build Started%0ADevice: munch (Poco F4)%0AType: ${LABEL} — ${{ inputs.script }}%0ADate: $(date +'%Y-%m-%d %H:%M UTC')" | jq '.ok'
 
+      - name: Guard unsupported build script selection
+        run: |
+          if [ "${{ inputs.script }}" != "build.sh" ]; then
+            echo "FATAL: ${{ inputs.script }} is not wired into the packaging step."
+            echo "The Package zip step requires both APTKernel_AOSP_*.zip and APTKernel_MIUI_*.zip."
+            echo "build-miui.sh only produces the MIUI zip. Wire up packaging before enabling."
+            exit 1
+          fi
+          echo "Build script: ${{ inputs.script }} — OK"
+
       - name: Cleanup disk space
         run: |
           sudo rm -rf /usr/share/dotnet /opt/ghc \
@@ -122,6 +132,47 @@ jobs:
           echo "KERNEL_SOURCE_SHA=${RESOLVED_SHA}" >> $GITHUB_ENV
           echo "Resolved to commit: ${RESOLVED_SHA}"
 
+      - name: Patch ReSukiSU — remove ATFWD-daemon sucompat exclusion
+        # WHY THIS EXISTS:
+        # dmesg shows: "KernelSU: mark no sucompat checks for pid: XXXX, exec: /vendor/bin/ATFWD-daemon"
+        # logcat shows: "ATFWD-daemon: libminijail: blocked syscall: gettid"
+        # The "mark no sucompat checks" message means ReSukiSU has ATFWD-daemon on an
+        # exclusion list, bypassing its syscall compatibility mapping. This causes gettid
+        # (syscall 224) to be presented to the daemon on a different code path, where its
+        # pre-built libminijail BPF seccomp filter blocks it as an unexpected syscall number.
+        # Result: SIGSYS (signal 31) self-delivered, daemon crashes, repeats every 5 seconds.
+        # The fix: remove ATFWD-daemon from the exclusion list so sucompat handles it normally.
+        run: |
+          echo "Searching for ATFWD-daemon exclusion in ReSukiSU/KernelSU source..."
+          FOUND=0
+          for f in $(grep -rl "ATFWD\|atfwd" apasitu/kernel/ksu/ 2>/dev/null); do
+            echo "  Found reference in: $f"
+            grep -n "ATFWD\|atfwd" "$f"
+            # Remove any line that contains ATFWD-daemon (exclusion list entry)
+            sed -i "/ATFWD-daemon/d" "$f"
+            sed -i "/atfwd-daemon/Id" "$f"
+            echo "  Removed ATFWD-daemon entries from $f"
+            FOUND=1
+          done
+          if [ "$FOUND" -eq 0 ]; then
+            echo "  No ATFWD-daemon exclusion found in apasitu/kernel/ksu/ — may be in a different path."
+            echo "  Searching wider..."
+            grep -rl "ATFWD\|no.sucompat" apasitu/fs/ apasitu/security/ 2>/dev/null | head -5 || true
+            echo "  WARNING: Could not locate exclusion. The ATFWD crash loop may persist."
+            echo "  Continuing build — do not treat this as a passing build for telephony stability."
+          else
+            echo "  ATFWD-daemon exclusion removed from $FOUND file(s)."
+          fi
+
+      - name: Verify ATFWD-daemon not excluded from sucompat
+        run: |
+          if grep -rq "ATFWD-daemon" apasitu/kernel/ksu/ 2>/dev/null; then
+            echo "FATAL: ATFWD-daemon still present in KernelSU source after patch step."
+            grep -rn "ATFWD-daemon" apasitu/kernel/ksu/
+            exit 1
+          fi
+          echo "OK: ATFWD-daemon not found in KernelSU exclusion source."
+
       - name: Set PitchKernel name
         run: |
           echo "-pitchkernel" > apasitu/localversion-st
@@ -164,6 +215,18 @@ jobs:
             echo "CONFIG_IOSCHED_DEADLINE=y"
             echo 'CONFIG_DEFAULT_IOSCHED="mq-deadline"'
           } >> "$DEFCONFIG"
+
+
+          # Thermal subsystem — fix for ThermalHalWrapper HAL read failures
+          # (36 "Sensor Temperature read failure" errors per 8 minutes in logcat)
+          cd apasitu
+          ./scripts/config --file arch/arm64/configs/munch_defconfig \
+            --enable THERMAL \
+            --enable THERMAL_OF \
+            --enable THERMAL_GOV_STEP_WISE \
+            --enable QCOM_TSENS \
+            --enable QCOM_SPMI_TEMP_ALARM
+          cd ..
 
           echo "Patched defconfig (tail -20):"
           tail -20 "$DEFCONFIG"
@@ -276,17 +339,17 @@ jobs:
           cp -v "$AK3_OURS/anykernel.sh" "$AK3_BUILT/anykernel.sh"
           mkdir -p "$AK3_BUILT/patch"
           cp -v "$AK3_OURS/patch/pitchkernel_cpufreq.sh" "$AK3_BUILT/patch/pitchkernel_cpufreq.sh"
-          cp -v "$AK3_OURS/patch/pitchkernel_root_hide.sh" "$AK3_BUILT/patch/pitchkernel_root_hide.sh"
+          cp -v "$AK3_OURS/patch/pitchkernel_banking_prep.sh" "$AK3_BUILT/patch/pitchkernel_banking_prep.sh"
           chmod 755 "$AK3_BUILT/patch/pitchkernel_cpufreq.sh"
-          chmod 755 "$AK3_BUILT/patch/pitchkernel_root_hide.sh"
+          chmod 755 "$AK3_BUILT/patch/pitchkernel_banking_prep.sh"
 
           echo "Verifying overlaid files:"
           grep -m1 "PitchKernel by Mujinn" "$AK3_BUILT/anykernel.sh" \
             || { echo "ERROR: anykernel.sh does not look like our version"; exit 1; }
           grep -m1 "PitchKernel" "$AK3_BUILT/patch/pitchkernel_cpufreq.sh" \
             || { echo "ERROR: pitchkernel_cpufreq.sh missing expected content"; exit 1; }
-          test -f "$AK3_BUILT/patch/pitchkernel_root_hide.sh" \
-            || { echo "ERROR: pitchkernel_root_hide.sh was not overlaid"; exit 1; }
+          test -f "$AK3_BUILT/patch/pitchkernel_banking_prep.sh" \
+            || { echo "ERROR: pitchkernel_banking_prep.sh was not overlaid"; exit 1; }
           echo "Overlay complete."
 
       - name: Package zip

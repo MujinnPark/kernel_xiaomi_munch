@@ -1,6 +1,9 @@
 #!/system/bin/sh
-# PitchKernel root-hiding helper for banking apps
+# PitchKernel banking app prep — force-stop on boot
 # Installed by AnyKernel3 to post-fs-data.d so it runs after boot.
+# NOTE: This script does NOT hide root. It force-stops banking apps on boot
+# so they re-evaluate root state on next launch. Actual susfs root hiding
+# is pending verified ksu_susfs CLI syntax — see script body comments.
 #
 # ============================================================================
 # UNVERIFIED — READ BEFORE RE-ENABLING
