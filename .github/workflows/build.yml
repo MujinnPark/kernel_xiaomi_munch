@@ -217,10 +217,10 @@ jobs:
           } >> "$DEFCONFIG"
 
           cd apasitu
-          ./scripts/config --file arch/arm64/configs/munch_defconfig \\
-            --enable MQ_IOSCHED_DEADLINE \\
-            --disable IOSCHED_CFQ \\
-            --disable MQ_IOSCHED_KYBER \\
+          ./scripts/config --file arch/arm64/configs/munch_defconfig \
+            --enable MQ_IOSCHED_DEADLINE \
+            --disable IOSCHED_CFQ \
+            --disable MQ_IOSCHED_KYBER \
             --set-str DEFAULT_IOSCHED "mq-deadline"
           cd ..
 
