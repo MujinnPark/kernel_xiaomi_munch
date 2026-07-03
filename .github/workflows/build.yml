@@ -145,7 +145,7 @@ jobs:
         run: |
           echo "Searching for ATFWD-daemon exclusion in ReSukiSU/KernelSU source..."
           FOUND=0
-          for f in $(grep -rl "ATFWD\|atfwd" apasitu/kernel/ksu/ 2>/dev/null); do
+          for f in $(grep -rl "ATFWD\|atfwd\|mark no sucompat\|no_sucompat" apasitu/ --include="*.c" --include="*.h" 2>/dev/null | grep -v "\.git"); do
             echo "  Found reference in: $f"
             grep -n "ATFWD\|atfwd" "$f"
             # Remove any line that contains ATFWD-daemon (exclusion list entry)
@@ -314,6 +314,25 @@ jobs:
           fi
 
           echo "SUSFS verification passed — real, not just labeled."
+
+      - name: Verify pitchkernel scripts are in the AK3 overlay
+        run: |
+          for f in pitchkernel_cpufreq.sh pitchkernel_banking_prep.sh; do
+            TARGET="PitchKernel/anykernel/patch/$f"
+            if [ ! -f "$TARGET" ]; then
+              echo "FATAL: $TARGET missing from repo — will not be installed to post-fs-data.d"
+              exit 1
+            fi
+            if [ ! -x "$TARGET" ]; then
+              echo "WARNING: $TARGET is not executable — fixing"
+              chmod 755 "$TARGET"
+            fi
+            # Verify the script has a PitchKernel log line (so logcat tag will appear on device)
+            if ! grep -q "log -p.*PitchKernel" "$TARGET"; then
+              echo "WARNING: $TARGET has no 'log -p.*PitchKernel' line — boot execution will be silent"
+            fi
+            echo "OK: $TARGET"
+          done
 
       - name: Verify ak3-core.sh is complete
         run: |
