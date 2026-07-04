@@ -124,26 +124,13 @@ jobs:
         run: |
           echo "Cloning branch: ${KERNEL_SOURCE_BRANCH} (pinned explicitly — see step comment)"
           git clone --depth=1 --single-branch -b "${KERNEL_SOURCE_BRANCH}" \
-            https://github.com/AstideLabs/android_kernel_xiaomi_sm8250.git \
+            https://github.com/MujinnPark/android_kernel_xiaomi_sm8250.git \
             apasitu
           ls apasitu/build.sh apasitu/build-miui.sh
           RESOLVED_SHA=$(git -C apasitu rev-parse --short HEAD)
           echo "KERNEL_SOURCE_BRANCH=${KERNEL_SOURCE_BRANCH}" >> $GITHUB_ENV
           echo "KERNEL_SOURCE_SHA=${RESOLVED_SHA}" >> $GITHUB_ENV
           echo "Resolved to commit: ${RESOLVED_SHA}"
-
-      - name: Patch kernel seccomp — gettid bypass for ATFWD
-        run: |
-          SECCOMP_C="apasitu/kernel/seccomp.c"
-          [ -f "$SECCOMP_C" ] || { echo "FATAL: $SECCOMP_C not found"; exit 1; }
-          if grep -q "seccomp_run_filters" "$SECCOMP_C"; then
-            FUNC="seccomp_run_filters"
-          else
-            FUNC="__seccomp_filter"
-          fi
-          echo "Patching $SECCOMP_C at $FUNC"
-          python3 PitchKernel/scripts/patch_seccomp.py "$SECCOMP_C" "$FUNC"
-          grep -n "PitchKernel: bypass BPF" "$SECCOMP_C"             && echo "OK: gettid bypass verified"             || { echo "FATAL: patch not applied"; exit 1; }
 
       - name: Patch ReSukiSU — fix ATFWD-daemon gettid vDSO regression
         # WHY THIS EXISTS:
@@ -554,7 +541,7 @@ jobs:
 
             **Build date:** ${{ env.BUILD_DATE }}
             **Type:** ${{ env.BUILD_TYPE }}
-            **Base:** AstideLabs/android_kernel_xiaomi_sm8250 @ `${{ env.KERNEL_SOURCE_BRANCH }}` (`${{ env.KERNEL_SOURCE_SHA }}`)
+            **Base:** MujinnPark/android_kernel_xiaomi_sm8250 @ `${{ env.KERNEL_SOURCE_BRANCH }}` (`${{ env.KERNEL_SOURCE_SHA }}`)
             **Toolchain:** ZyCromerZ Clang 16.0.6
 
             ### Features
