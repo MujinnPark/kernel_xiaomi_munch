@@ -133,53 +133,17 @@ jobs:
           echo "Resolved to commit: ${RESOLVED_SHA}"
 
       - name: Patch kernel seccomp — gettid bypass for ATFWD
-        # ROOT CAUSE (confirmed 2026-07-04):
-        # gettid added to Linux vDSO only in 5.6+. On 4.19 always hits real
-        # syscall NR 178. ATFWD BPF filter allowlist: connect,fcntl,sendto,
-        # socket,writev — gettid absent -> SIGSYS -> crash every 5s.
-        # Stock MIUI kernel has CONFIG_SECCOMP=n so BPF never enforced.
-        # Fix: patch seccomp.c to return 0 for gettid before BPF runs.
         run: |
           SECCOMP_C="apasitu/kernel/seccomp.c"
           [ -f "$SECCOMP_C" ] || { echo "FATAL: $SECCOMP_C not found"; exit 1; }
-          if grep -q "PitchKernel: bypass BPF" "$SECCOMP_C"; then
-            echo "Already patched"; exit 0
-          fi
           if grep -q "seccomp_run_filters" "$SECCOMP_C"; then
             FUNC="seccomp_run_filters"
           else
             FUNC="__seccomp_filter"
           fi
-          echo "Injection point: $FUNC"
-          cat > /tmp/patch_seccomp.py << 'PATCHEOF'
-import sys, re
-path, func = sys.argv[1], sys.argv[2]
-with open(path) as f:
-    c = f.read()
-pat = r'((?:static\s+)?(?:u32|int)\s+' + re.escape(func) + r'\s*\([^)]+\)\s*\{)'
-m = re.search(pat, c, re.MULTILINE)
-if not m:
-    print("ERROR: function not found"); sys.exit(1)
-bypass = (
-    "
-	/* PitchKernel: bypass BPF seccomp for gettid NR 178 ARM64.
-"
-    "	 * gettid not in 4.19 vDSO; ATFWD BPF filter blocks it -> SIGSYS.
-"
-    "	 * Stock MIUI has SECCOMP=n so filter never fires there. */
-"
-    "	if (unlikely(syscall_nr == __NR_gettid))
-"
-    "		return 0;
-"
-)
-c = c[:m.end()] + bypass + c[m.end():]
-with open(path, 'w') as f:
-    f.write(c)
-print("Patched " + func + " in " + path)
-PATCHEOF
-          python3 /tmp/patch_seccomp.py "$SECCOMP_C" "$FUNC"
-          grep -n "PitchKernel: bypass BPF" "$SECCOMP_C"             && echo "Verification OK"             || { echo "FATAL: patch not applied"; exit 1; }
+          echo "Patching $SECCOMP_C at $FUNC"
+          python3 PitchKernel/scripts/patch_seccomp.py "$SECCOMP_C" "$FUNC"
+          grep -n "PitchKernel: bypass BPF" "$SECCOMP_C"             && echo "OK: gettid bypass verified"             || { echo "FATAL: patch not applied"; exit 1; }
 
       - name: Patch ReSukiSU — fix ATFWD-daemon gettid vDSO regression
         # WHY THIS EXISTS:
