@@ -66,7 +66,7 @@ jobs:
         run: |
           if [ "${{ inputs.script }}" != "build.sh" ]; then
             echo "FATAL: ${{ inputs.script }} is not wired into the packaging step."
-            echo "The Package zip step requires both APTKernel_AOSP_*.zip and APTKernel_MIUI_*.zip."
+            echo "The Package zip step requires both PitchKernel_AOSP_*.zip and PitchKernel_MIUI_*.zip."
             echo "build-miui.sh only produces the MIUI zip. Wire up packaging before enabling."
             exit 1
           fi
@@ -407,21 +407,21 @@ jobs:
           echo "BUILD_TYPE=${TYPE}" >> $GITHUB_ENV
           echo "ARTIFACT_LABEL=${ARTIFACT_LABEL}" >> $GITHUB_ENV
 
-          AOSP_SRC_ZIP=$(find apasitu -maxdepth 1 -name "APTKernel_AOSP_*.zip" | head -1)
+          AOSP_SRC_ZIP=$(find apasitu -maxdepth 1 -name "PitchKernel_AOSP_*.zip" | head -1)
           if [ -z "$AOSP_SRC_ZIP" ] || [ ! -f "$AOSP_SRC_ZIP" ]; then
-            echo "ERROR: APTKernel_AOSP_*.zip not found. Available zips:"
+            echo "ERROR: PitchKernel_AOSP_*.zip not found. Available zips:"
             find apasitu -maxdepth 1 -name "*.zip"
             exit 1
           fi
           echo "AOSP source: $AOSP_SRC_ZIP ($(du -sh $AOSP_SRC_ZIP | cut -f1))"
 
-          # build.sh (the "AOSP+MIUI dual zip" path) also produces APTKernel_MIUI_*.zip
+          # build.sh (the "AOSP+MIUI dual zip" path) also produces PitchKernel_MIUI_*.zip
           # with its own Image/dtb/dtbo.img — these are NOT interchangeable with the
           # AOSP ones (different config, different dtbo). Both must be present for
           # the dual-image AK3 flash pattern to actually work for MIUI/HyperOS users.
-          MIUI_SRC_ZIP=$(find apasitu -maxdepth 1 -name "APTKernel_MIUI_*.zip" | head -1)
+          MIUI_SRC_ZIP=$(find apasitu -maxdepth 1 -name "PitchKernel_MIUI_*.zip" | head -1)
           if [ -z "$MIUI_SRC_ZIP" ] || [ ! -f "$MIUI_SRC_ZIP" ]; then
-            echo "ERROR: APTKernel_MIUI_*.zip not found. Available zips:"
+            echo "ERROR: PitchKernel_MIUI_*.zip not found. Available zips:"
             find apasitu -maxdepth 1 -name "*.zip"
             echo "If you intentionally ran a build that skips MIUI, this packaging step"
             echo "needs a --skip-miui flag added — it currently assumes both zips exist."
