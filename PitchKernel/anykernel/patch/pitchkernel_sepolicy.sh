@@ -1,6 +1,5 @@
 #!/system/bin/sh
 # PitchKernel SELinux policy fixes
-# Runs from post-fs-data.d via KSU on every boot.
 
 RULES="
 allow vendor_hal_citsensorservice_xiaomi_default vendor_diag_device chr_file { read write open ioctl getattr }
@@ -8,9 +7,12 @@ allow miuibooster kernel process { getsched setsched }
 allow miuibooster platform_app process { getsched setsched }
 allow isolated_app turbosched_service service_manager { find }
 allow vendor_hal_perf_default system_server dir { search }
+allow vendor_hal_perf_default system_server file { read open getattr }
 allow vendor_hal_perf_default system_server proc { read }
 allow vendor_hal_perf_default ksu dir { search }
+allow vendor_hal_perf_default vendor_hal_perf_default capability { dac_override }
 allow system_server zygote process { setsched }
+allow system_suspend sysfs file { read open getattr }
 "
 
 SEPOLICY_DIR="/data/adb/modules/pitchkernel_tuning"
