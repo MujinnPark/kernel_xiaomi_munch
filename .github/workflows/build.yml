@@ -203,6 +203,7 @@ jobs:
             --enable THERMAL_OF \
             --enable THERMAL_GOV_STEP_WISE \
             --enable QCOM_TSENS \
+            --enable QCOM_SPMI_TEMP_ALARM \
             --enable QCOM_SPMI_TEMP_ALARM
           cd ..
 
