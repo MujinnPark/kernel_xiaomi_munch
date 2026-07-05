@@ -113,6 +113,8 @@ cp "$AKHOME"/patch/pitchkernel_cpufreq.sh /data/adb/post-fs-data.d/pitchkernel_c
 cp "$AKHOME"/patch/pitchkernel_banking_prep.sh /data/adb/post-fs-data.d/pitchkernel_banking_prep.sh 2>/dev/null;
 chmod 755 /data/adb/post-fs-data.d/pitchkernel_cpufreq.sh 2>/dev/null;
 chmod 755 /data/adb/post-fs-data.d/pitchkernel_banking_prep.sh 2>/dev/null;
+  cp "$AKHOME/patch/pitchkernel_sepolicy.sh" /data/adb/post-fs-data.d/pitchkernel_sepolicy.sh 2>/dev/null;
+  chmod 755 /data/adb/post-fs-data.d/pitchkernel_sepolicy.sh 2>/dev/null;
 if [ -f /data/adb/post-fs-data.d/pitchkernel_cpufreq.sh ] && [ -f /data/adb/post-fs-data.d/pitchkernel_banking_prep.sh ]; then
   ui_print "  helper scripts installed to post-fs-data.d";
 else
