@@ -89,11 +89,37 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ~/.cache/ccache_mikernel
-          key: pitchkernel-ccache-munch-${{ github.ref_name }}-${{ github.sha }}
+          # Key namespace bumped (ccache -> ccache-ecs) because ccache-ECS is built on
+          # ccache 4.13.5 and its cache format is not compatible with the ccache 4.9.1
+          # that ubuntu-latest's apt repo installs. Restoring an old-format cache under
+          # the old key would silently corrupt/mismatch direct-mode lookups. Do not
+          # revert this key to the old "pitchkernel-ccache-munch-..." namespace unless
+          # ccache-ECS is removed.
+          key: pitchkernel-ccache-ecs-munch-${{ github.ref_name }}-${{ github.sha }}
           restore-keys: |
-            pitchkernel-ccache-munch-${{ github.ref_name }}-
-            pitchkernel-ccache-munch-
-            pitchkernel-ccache-
+            pitchkernel-ccache-ecs-munch-${{ github.ref_name }}-
+            pitchkernel-ccache-ecs-munch-
+            pitchkernel-ccache-ecs-
+
+      - name: Setup ccache-ECS
+        run: |
+          # cctv18/ccache-ECS (fork of ccache/ccache, base v4.13.5) — adds ECS cache
+          # validation mode: when CCACHE_IS_KERNEL_COMPILING=true is set, it hashes
+          # source + referenced headers instead of relying on size+mtime, so
+          # defconfig/config-option changes stop invalidating the whole cache.
+          # https://github.com/cctv18/ccache-ECS (release ccache-ECS-v1.0)
+          mkdir -p "$HOME/ccache-ecs/bin" "$HOME/ccache-ecs/extracted"
+          curl -fsSL -o /tmp/ccache-ecs.zip \
+            https://github.com/cctv18/ccache-ECS/releases/download/ccache-ECS-v1.0/linux-x86_64-glibc-binary.zip
+          unzip -q -o /tmp/ccache-ecs.zip -d "$HOME/ccache-ecs/extracted"
+          CCACHE_BIN=$(find "$HOME/ccache-ecs/extracted" -type f -iname 'ccache' | head -1)
+          [ -n "$CCACHE_BIN" ] || { echo "FATAL: 'ccache' binary not found inside linux-x86_64-glibc-binary.zip"; find "$HOME/ccache-ecs/extracted"; exit 1; }
+          cp "$CCACHE_BIN" "$HOME/ccache-ecs/bin/ccache"
+          chmod +x "$HOME/ccache-ecs/bin/ccache"
+          # Prepend so this shadows the apt-installed /usr/bin/ccache for every
+          # subsequent step in this job, without touching the apt install step.
+          echo "$HOME/ccache-ecs/bin" >> "$GITHUB_PATH"
+          "$HOME/ccache-ecs/bin/ccache" --version
 
       - name: Setup ZyCromerZ Clang 16
         run: |
@@ -222,6 +248,9 @@ jobs:
           CCACHE_COMPRESS: '1'
           CCACHE_COMPRESSLEVEL: '1'
           CCACHE_SLOPPINESS: file_stat_matches,locale,time_macros
+          # Required to activate ccache-ECS's hash-based (not size+mtime) cache
+          # validation mode. No-op / ignored by stock ccache if this ever reverts.
+          CCACHE_IS_KERNEL_COMPILING: 'true'
         run: |
           cd apasitu
           chmod +x build.sh build-miui.sh
