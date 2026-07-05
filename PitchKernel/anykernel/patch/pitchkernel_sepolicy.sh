@@ -9,10 +9,16 @@ allow isolated_app turbosched_service service_manager { find }
 allow vendor_hal_perf_default system_server dir { search }
 allow vendor_hal_perf_default system_server file { read open getattr }
 allow vendor_hal_perf_default system_server proc { read }
+allow vendor_hal_perf_default ksu file { read open getattr }
 allow vendor_hal_perf_default ksu dir { search }
 allow vendor_hal_perf_default vendor_hal_perf_default capability { dac_override }
+allow vendor_hal_perf_default hal_audio_default dir { search }
 allow system_server zygote process { setsched }
-allow system_suspend sysfs file { read open getattr }
+allow system_suspend vendor_sysfs_battery_supply file { read open getattr }
+allow rild vendor_pd_locater_dbg_prop file { read open getattr }
+allow rild default_prop file { read open getattr }
+allow vendor_poweroffalarm_app default_android_service service_manager { find }
+allow vendor_poweroffalarm_app hyperos_cust_feature_resolve_service service_manager { find }
 "
 
 SEPOLICY_DIR="/data/adb/modules/pitchkernel_tuning"
