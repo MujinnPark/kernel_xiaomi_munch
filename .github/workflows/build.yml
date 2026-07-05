@@ -337,8 +337,10 @@ jobs:
           mkdir -p "$AK3_BUILT/patch"
           cp -v "$AK3_OURS/patch/pitchkernel_cpufreq.sh" "$AK3_BUILT/patch/pitchkernel_cpufreq.sh"
           cp -v "$AK3_OURS/patch/pitchkernel_banking_prep.sh" "$AK3_BUILT/patch/pitchkernel_banking_prep.sh"
+          cp -v "$AK3_OURS/patch/pitchkernel_sepolicy.sh" "$AK3_BUILT/patch/pitchkernel_sepolicy.sh"
           chmod 755 "$AK3_BUILT/patch/pitchkernel_cpufreq.sh"
           chmod 755 "$AK3_BUILT/patch/pitchkernel_banking_prep.sh"
+          chmod 755 "$AK3_BUILT/patch/pitchkernel_sepolicy.sh"
 
           echo "Verifying overlaid files:"
           grep -m1 "PitchKernel by Mujinn" "$AK3_BUILT/anykernel.sh" \
