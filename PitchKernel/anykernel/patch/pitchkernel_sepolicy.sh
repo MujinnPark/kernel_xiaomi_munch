@@ -25,6 +25,8 @@ allow mediaprovider_app property_type file { read open getattr map }
 allow permissioncontroller_app property_type file { read open getattr map }
 allow traceur_app property_type file { read open getattr map }
 allow gmscore_app property_type file { read open getattr map }
+allow bpfloader property_type file { read open getattr map }
+allow hal_misight_default property_type file { read open getattr map }
 allow vendor_init build_prop property_service { set }
 allow vendor_init default_prop property_service { set }
 allow rild vendor_pd_locater_dbg_prop file { read open getattr map }
@@ -40,6 +42,28 @@ allow rkpdapp hyperos_cust_feature_resolve_service service_manager { find }
 allow vendor_qtelephony data_log_stability_file dir { search }
 allow untrusted_app sysfs_zram file { read open getattr }
 allow untrusted_app data_log_file dir { search }
+allow untrusted_app vendor_sysfs_battery_supply dir { search }
+allow untrusted_app vendor_sysfs_battery_supply file { read open getattr }
+allow untrusted_app vendor_sysfs_usb_supply dir { search }
+allow untrusted_app vendor_sysfs_usb_supply file { read open getattr }
+allow vendor_poweroffalarm_app default_android_service service_manager { find }
+allow vendor_poweroffalarm_app hyperos_cust_feature_resolve_service service_manager { find }
+allow vendor_poweroffalarm_app vendor_poweroffalarm_app anon_inode { create }
+allow vendor_systemhelper_app default_android_service service_manager { find }
+allow vendor_systemhelper_app hyperos_cust_feature_resolve_service service_manager { find }
+allow vendor_embmssl_app hyperos_cust_feature_resolve_service service_manager { find }
+allow vendor_embmssl_app vendor_embmssl_app anon_inode { create }
+allow vendor_location_app hyperos_cust_feature_resolve_service service_manager { find }
+allow vendor_qtidataservices_app vendor_qtidataservices_app anon_inode { create }
+allow mcd mcd capability { sys_ptrace }
+allow mcd proc_pid_max file { read open getattr }
+allow mcd device_identifiers_service service_manager { find }
+allow mcd mcd_service service_manager { find }
+allow misight vendor_bsp_data_log_file dir { search write add_name }
+allow misight vendor_bsp_data_log_file file { create write open append getattr }
+allow hal_misight_default abreuse_prop file { read open getattr map }
+allow surfaceflinger default_android_service service_manager { find }
+allow surfaceflinger mcd_data_file dir { search }
 "
 
 SEPOLICY_DIR="/data/adb/modules/pitchkernel_tuning"
