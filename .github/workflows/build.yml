@@ -254,10 +254,23 @@ jobs:
         run: |
           cd apasitu
           chmod +x build.sh build-miui.sh
+          # PitchKernel: ReSukiSU's setup.sh (pulled fresh from upstream inside
+          # build.sh) runs a GKI-oriented compat probe that greps for
+          # include/linux/seccomp_types.h. That header was introduced upstream
+          # in Linux 5.x+ (split out of seccomp.h) and does not exist on this
+          # 4.19.325 non-GKI tree, so the grep fails harmlessly and ReSukiSU
+          # just skips that compat shim. The grep runs from a process nested
+          # inside setup.sh's own build/config step, so filtering stderr
+          # inside build.sh via `2> >(...)` does not reliably catch it -
+          # nested subprocesses can reopen fd 2 in ways that bypass the
+          # parent's process substitution. Filtering the whole step's output
+          # here is reliable regardless of nesting depth. Only this exact
+          # known-benign line is stripped; any other ReSukiSU/setup output,
+          # including real new failures, still passes through untouched.
           if [ "${{ inputs.ksu }}" == "true" ]; then
-            bash ${{ inputs.script }} munch ksu
+            bash ${{ inputs.script }} munch ksu 2> >(grep -v "seccomp_types.h: No such file or directory" >&2)
           else
-            bash ${{ inputs.script }} munch
+            bash ${{ inputs.script }} munch 2> >(grep -v "seccomp_types.h: No such file or directory" >&2)
           fi
 
       - name: Verify SUSFS actually compiled in
