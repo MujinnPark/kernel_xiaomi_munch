@@ -239,6 +239,14 @@ jobs:
           grep -E "UCLAMP_TASK|LOCALVERSION_AUTO" "$DEFCONFIG" || echo "WARNING: grep found nothing"
 
       - name: Build kernel
+        # Explicit shell with pipefail: this step pipes through `tee` below so
+        # the next step can annotate known-benign noise. GitHub Actions' docs
+        # say bash defaults to `-eo pipefail`, but in practice only `-e` is
+        # reliably applied when `shell:` is left unspecified -- `-o pipefail`
+        # is not (confirmed: actions/runner-images#4459, actions/runner#1955).
+        # Without this, a failing build.sh would be masked by tee's own zero
+        # exit code and the step would report success. Do not remove this.
+        shell: bash -eo pipefail {0}
         env:
           KBUILD_BUILD_TIMESTAMP: ''
           KBUILD_BUILD_USER: pitchkernel
@@ -268,10 +276,61 @@ jobs:
           # known-benign line is stripped; any other ReSukiSU/setup output,
           # including real new failures, still passes through untouched.
           if [ "${{ inputs.ksu }}" == "true" ]; then
-            bash ${{ inputs.script }} munch ksu 2> >(grep -v "seccomp_types.h: No such file or directory" >&2)
+            bash ${{ inputs.script }} munch ksu 2> >(grep -v "seccomp_types.h: No such file or directory" >&2) \
+              | tee /tmp/pitchkernel-build-step.log
           else
-            bash ${{ inputs.script }} munch 2> >(grep -v "seccomp_types.h: No such file or directory" >&2)
+            bash ${{ inputs.script }} munch 2> >(grep -v "seccomp_types.h: No such file or directory" >&2) \
+              | tee /tmp/pitchkernel-build-step.log
           fi
+
+      - name: Annotate known-benign build noise
+        run: |
+          # PitchKernel: several third-party tools invoked during the build
+          # (ReSukiSU's setup.sh, ak3/symbol-scan utilities, wget) print raw,
+          # unlabeled diagnostic lines that read like failures out of context --
+          # this has already cost two full debugging round-trips (the
+          # seccomp_types.h grep noise, the report_cfi_failure symbol-scan
+          # miss). Nothing upstream tags these as benign, so anyone reading the
+          # log has to re-derive the classification from scratch every time.
+          # This step is a running registry: known-benign patterns, confirmed
+          # against source, get flagged here so future log reviews (human or
+          # AI) start from a known baseline instead of re-investigating noise
+          # that's already been traced and closed out.
+          #
+          # Adding a new entry: only add a pattern here after tracing it to a
+          # real, harmless, upstream/third-party root cause -- the same bar
+          # used for the entries below. This file is not a place to silence
+          # things that are merely inconvenient or unexplained.
+          LOG="/tmp/pitchkernel-build-step.log"
+          [ -f "$LOG" ] || { echo "No build-step log captured -- skipping annotation."; exit 0; }
+
+          echo "### Known-benign noise check ###"
+          echo ""
+
+          check_pattern() {
+            local pattern="$1"
+            local label="$2"
+            local count
+            count=$(grep -c "$pattern" "$LOG" || true)
+            if [ "$count" -gt 0 ]; then
+              echo "[benign] x$count -- $label"
+              echo "         pattern: $pattern"
+            fi
+          }
+
+          check_pattern "seccomp_types.h: No such file or directory" \
+            "ReSukiSU compat probe checks a GKI-era (5.x+) header that does not exist on this 4.19.325 non-GKI tree; grep fails harmlessly and ReSukiSU skips that compat shim. See build.yml 'Build kernel' step for the stderr filter and full explanation."
+
+          check_pattern "no symbol: report_cfi_failure" \
+            "Symbol-scan tool checks for a name that has never existed in this kernel or ReSukiSU's shipped code under any config; the real exported symbol is cfi_failure_handler (kernel/cfi.c). CONFIG_CFI_CLANG=y with CONFIG_CFI_PERMISSIVE unset (enforcing mode) is correct and consistent with this miss. No fix needed."
+
+          check_pattern "Error in reading or end of file." \
+            "wget's own benign notice when opening a fresh connection with no prior resume state; the download it precedes (patch_linux from SukiSU-Ultra releases) completes normally in the following lines."
+
+          echo ""
+          echo "Any other ERROR/FATAL/WARNING text in the log that is NOT listed above"
+          echo "has not been traced and classified yet -- treat it as a real signal,"
+          echo "not noise, until it has been."
 
       - name: Verify SUSFS actually compiled in
         run: |
