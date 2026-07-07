@@ -283,6 +283,51 @@ jobs:
               | tee /tmp/pitchkernel-build-step.log
           fi
 
+      - name: DEBUG - snapshot ReSukiSU/SUSFS generated source layout
+        # PitchKernel: temporary, one-off diagnostic step. ReSukiSU's setup.sh
+        # (fetched fresh from upstream in the "Build kernel" step above) writes
+        # its KSU driver source and SUSFS integration directly into the kernel
+        # source tree at build time -- none of it is vendored in this repo, so
+        # there is no static way to inspect its actual file layout. This is
+        # needed to evaluate whether/how a SUSFS 2.2.0 backport patch (written
+        # against a different KSU fork's static layout: kernel/feature/,
+        # kernel/hook/, kernel/supercall/) could apply here, since those paths
+        # do not exist anywhere in this repo's static source.
+        #
+        # Safe to run after "Build kernel": build.sh's own rm -rf calls only
+        # target build output (out/, anykernel/, dts staging), never the
+        # checked-out kernel source tree itself, so whatever setup.sh wrote
+        # should still be present in apasitu/ at this point in the job.
+        #
+        # Remove this step once the SUSFS 2.2.0 investigation is resolved --
+        # it exists to answer a specific open question, not as permanent CI.
+        if: always()
+        run: |
+          cd apasitu
+          echo "### Searching for KSU/SUSFS driver source actually written by setup.sh ###"
+          echo ""
+          echo "--- directories matching feature/hook/supercall/kernelsu/susfs (case-insensitive) ---"
+          find . -type d \( -iname "*kernelsu*" -o -iname "*resukisu*" -o -iname "*susfs*" \
+            -o -iname "feature" -o -iname "hook" -o -iname "supercall" \) 2>/dev/null | grep -v "^\./\.git"
+          echo ""
+          echo "--- files matching known SUSFS/KSU source filenames ---"
+          find . -iname "susfs*.c" -o -iname "susfs*.h" -o -iname "ksu.c" -o -iname "kernel_umount.c" \
+            -o -iname "setuid_hook.c" 2>/dev/null | grep -v "^\./\.git"
+          echo ""
+          echo "--- any KSU_SUSFS-related Kconfig entries actually present after setup.sh ran ---"
+          grep -rn "KSU_SUSFS" --include="Kconfig*" . 2>/dev/null | head -30
+          echo ""
+          echo "--- top-level dirs in kernel source root, for orientation ---"
+          ls -la .
+          echo ""
+          echo "--- if a KernelSU-style top-level driver dir exists, show its structure ---"
+          for d in KernelSU kernelsu drivers/kernelsu; do
+            if [ -d "$d" ]; then
+              echo "found: $d"
+              find "$d" -maxdepth 3 -type f | head -50
+            fi
+          done
+
       - name: Annotate known-benign build noise
         run: |
           # PitchKernel: several third-party tools invoked during the build
