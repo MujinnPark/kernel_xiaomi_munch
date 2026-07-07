@@ -328,6 +328,30 @@ jobs:
             fi
           done
 
+      - name: ccache stats after build
+        # PitchKernel: added to actually answer "why did build time increase"
+        # with real ccache-reported hit/miss/size data, instead of inferring
+        # from GitHub Actions' cache transfer byte counts (which only show
+        # total bytes moved, not hit rate or whether CCACHE_MAXSIZE=5G in the
+        # "Build kernel" step's env is being honored by ccache-ECS). Confirmed
+        # by direct log comparison across 5 builds: total build time rose from
+        # 13m27s (07-06) to a sustained 16-17min (07-07 x4), and the GitHub
+        # Actions cache save size grew build-over-build. This step is the
+        # actual diagnostic; do not remove until that trend is understood.
+        #
+        # CCACHE_DIR must be re-declared here: env vars set in the "Build
+        # kernel" step's env: block do not carry over to this separate step,
+        # so without this ccache would fall back to its own default dir and
+        # report empty/wrong stats.
+        if: always()
+        env:
+          CCACHE_DIR: ~/.cache/ccache_mikernel
+        run: |
+          ccache -s || echo "ccache -s failed or ccache not on PATH"
+          echo ""
+          echo "--- raw cache dir size on disk vs CCACHE_MAXSIZE=5G ---"
+          du -sh "$HOME/.cache/ccache_mikernel" 2>/dev/null || echo "cache dir not found at expected path"
+
       - name: Annotate known-benign build noise
         run: |
           # PitchKernel: several third-party tools invoked during the build
