@@ -345,8 +345,18 @@ jobs:
         # report empty/wrong stats.
         if: always()
         env:
-          CCACHE_DIR: ~/.cache/ccache_mikernel
+          CCACHE_DIR: /home/runner/.cache/ccache_mikernel
         run: |
+          # PitchKernel: CCACHE_DIR must use an expanded absolute path here,
+          # not "~/...". GitHub Actions' env: block does not perform shell
+          # tilde expansion (~ is only expanded by an interactive shell
+          # parsing a command line, not when it's the literal value of an
+          # env var set via YAML) -- confirmed: this step previously set
+          # CCACHE_DIR: ~/.cache/ccache_mikernel and ccache -s reported
+          # 0.0/5.0 GiB used, while `du -sh "$HOME/.cache/ccache_mikernel"`
+          # (correctly shell-expanded) found a real 1.4G directory in the
+          # same job. build.sh's own CCACHE_DIR="$HOME/..." was fine because
+          # $HOME is expanded by bash; only this step's YAML-level ~ was broken.
           ccache -s || echo "ccache -s failed or ccache not on PATH"
           echo ""
           echo "--- raw cache dir size on disk vs CCACHE_MAXSIZE=5G ---"
