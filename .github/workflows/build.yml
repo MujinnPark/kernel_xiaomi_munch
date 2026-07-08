@@ -239,14 +239,19 @@ jobs:
           grep -E "UCLAMP_TASK|LOCALVERSION_AUTO" "$DEFCONFIG" || echo "WARNING: grep found nothing"
 
       - name: Build kernel
-        # Explicit shell with pipefail: this step pipes through `tee` below so
-        # the next step can annotate known-benign noise. GitHub Actions' docs
-        # say bash defaults to `-eo pipefail`, but in practice only `-e` is
-        # reliably applied when `shell:` is left unspecified -- `-o pipefail`
-        # is not (confirmed: actions/runner-images#4459, actions/runner#1955).
-        # Without this, a failing build.sh would be masked by tee's own zero
-        # exit code and the step would report success. Do not remove this.
-        shell: bash -eo pipefail {0}
+        # TEMPORARY TEST (see PitchKernel note below) - tee/process-substitution
+        # and explicit pipefail shell removed to isolate a confirmed 3x
+        # per-compile-call slowdown (105ms/call -> 325-355ms/call, same 8014
+        # call count, 3 consecutive identical-SHA builds) that started exactly
+        # when tee was added for the noise-annotation feature. Hypothesis:
+        # piping every one of 8000+ build output lines through a process-
+        # substitution grep filter AND tee (disk write) adds real per-line
+        # overhead during compilation itself, not just after. If this build
+        # returns to ~13-17min / ~105ms per call, the hypothesis is confirmed
+        # and tee needs to be redesigned (e.g. redirect to file only, without
+        # also duplicating to the live log stream) rather than reverted outright,
+        # since the pipefail fix (actions/runner#1955) is still needed for
+        # correctness once tee comes back.
         env:
           KBUILD_BUILD_TIMESTAMP: ''
           KBUILD_BUILD_USER: pitchkernel
@@ -275,12 +280,17 @@ jobs:
           # here is reliable regardless of nesting depth. Only this exact
           # known-benign line is stripped; any other ReSukiSU/setup output,
           # including real new failures, still passes through untouched.
+          #
+          # TEMPORARILY REMOVED FOR THIS TEST: the `2> >(grep -v ...)` filter
+          # and `| tee /tmp/pitchkernel-build-step.log`. This means the
+          # seccomp_types.h noise and the noise-annotation step's input file
+          # will not be present in THIS build's log -- expected and fine for
+          # a one-off timing test. Do not leave the pipeline in this state;
+          # both need to come back once the slowdown mechanism is confirmed.
           if [ "${{ inputs.ksu }}" == "true" ]; then
-            bash ${{ inputs.script }} munch ksu 2> >(grep -v "seccomp_types.h: No such file or directory" >&2) \
-              | tee /tmp/pitchkernel-build-step.log
+            bash ${{ inputs.script }} munch ksu
           else
-            bash ${{ inputs.script }} munch 2> >(grep -v "seccomp_types.h: No such file or directory" >&2) \
-              | tee /tmp/pitchkernel-build-step.log
+            bash ${{ inputs.script }} munch
           fi
 
       - name: DEBUG - snapshot ReSukiSU/SUSFS generated source layout
