@@ -102,7 +102,6 @@ jobs:
             pitchkernel-ccache-ecs-
 
       - name: Setup ccache-ECS
-        if: false  # TEMPORARY TEST: disable ccache-ECS to isolate the sustained 3x per-compile-call slowdown (see PitchKernel investigation notes). Re-enable by deleting this line once tested.
         run: |
           # cctv18/ccache-ECS (fork of ccache/ccache, base v4.13.5) — adds ECS cache
           # validation mode: when CCACHE_IS_KERNEL_COMPILING=true is set, it hashes
