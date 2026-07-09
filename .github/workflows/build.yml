@@ -29,7 +29,7 @@ permissions:
 jobs:
   build:
     name: PitchKernel munch
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     env:
       # SINGLE SOURCE OF TRUTH for which root provider this pipeline builds.
       # Every label below (Telegram start message, artifact/zip name, telegram.sh
