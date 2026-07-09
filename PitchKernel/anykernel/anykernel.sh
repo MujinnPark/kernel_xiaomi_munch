@@ -115,11 +115,25 @@ chmod 755 /data/adb/post-fs-data.d/pitchkernel_cpufreq.sh 2>/dev/null;
 chmod 755 /data/adb/post-fs-data.d/pitchkernel_banking_prep.sh 2>/dev/null;
   cp "$AKHOME/patch/pitchkernel_sepolicy.sh" /data/adb/post-fs-data.d/pitchkernel_sepolicy.sh 2>/dev/null;
   chmod 755 /data/adb/post-fs-data.d/pitchkernel_sepolicy.sh 2>/dev/null;
+## PitchKernel v2 scheduler/GPU tuning. Named 90-* so it runs after
+## pitchkernel_cpufreq.sh (governor default) in most post-fs-data.d
+## implementations that sort scripts lexically before exec -- this script
+## re-asserts schedutil defensively so ordering isn't load-bearing either
+## way, but do not remove the numeric prefix without checking KSU's actual
+## post-fs-data.d exec order first (not guaranteed alphabetical on all
+## KernelSU/Magisk versions - verify before relying on it).
+cp "$AKHOME/patch/pitchkernel_v2_tuning.sh" /data/adb/post-fs-data.d/90-pitchkernel_v2_tuning.sh 2>/dev/null;
+chmod 755 /data/adb/post-fs-data.d/90-pitchkernel_v2_tuning.sh 2>/dev/null;
 if [ -f /data/adb/post-fs-data.d/pitchkernel_cpufreq.sh ] && [ -f /data/adb/post-fs-data.d/pitchkernel_banking_prep.sh ]; then
   ui_print "  helper scripts installed to post-fs-data.d";
 else
   ui_print "  WARNING: could not write helper scripts to post-fs-data.d";
   ui_print "  (KSU/Magisk may not be initialized yet on first flash)";
+fi;
+if [ -f /data/adb/post-fs-data.d/90-pitchkernel_v2_tuning.sh ]; then
+  ui_print "  v2 scheduler/GPU tuning installed (check logcat -s PitchKernelV2 after boot)";
+else
+  ui_print "  WARNING: could not write v2 tuning script to post-fs-data.d";
 fi;
 ui_print " ";
 
