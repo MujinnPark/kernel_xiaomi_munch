@@ -86,6 +86,7 @@ jobs:
             device-tree-compiler
 
       - name: Setup ccache
+        id: ccache-restore
         uses: actions/cache@v4
         with:
           path: ~/.cache/ccache_mikernel
@@ -100,6 +101,11 @@ jobs:
             pitchkernel-ccache-ecs-munch-${{ github.ref_name }}-
             pitchkernel-ccache-ecs-munch-
             pitchkernel-ccache-ecs-
+
+      - name: Warn on ccache fallback key
+        if: steps.ccache-restore.outputs.cache-matched-key != steps.ccache-restore.outputs.cache-primary-key
+        run: |
+          echo "::warning::ccache restored from a fallback key (${{ steps.ccache-restore.outputs.cache-matched-key }}), not the exact primary key (${{ steps.ccache-restore.outputs.cache-primary-key }}). Cache may be stale relative to this commit."
 
       - name: Setup ccache-ECS
         run: |
@@ -120,6 +126,12 @@ jobs:
           # subsequent step in this job, without touching the apt install step.
           echo "$HOME/ccache-ecs/bin" >> "$GITHUB_PATH"
           "$HOME/ccache-ecs/bin/ccache" --version
+
+      - name: CPU baseline benchmark
+        run: |
+          echo "nproc: $(nproc)"
+          cat /proc/cpuinfo | grep "model name" | head -1
+          openssl speed -seconds 2 aes-256-cbc 2>&1 | tail -3
 
       - name: Setup ZyCromerZ Clang 16
         run: |
