@@ -38,8 +38,8 @@ jobs:
           # Bug fix (original): literal newlines inside a quoted bash string inside
           # a YAML block scalar break YAML parsing (GitHub reports "yaml syntax error
           # on line N"). Use printf with \n escape sequences instead.
-          TEXT=$(printf '📌 <b>PitchKernel</b> — New Commit\n<code>%s</code> on <code>%s</code>\nBy: %s\n\n<i>%s</i>' \
-            "$SHORT" "$BRANCH" "$AUTHOR_SAFE" "$TITLE_SAFE")
+          TEXT=$(printf '📌 <b>PitchKernel</b> — New Commit\n<code>%s</code>\nBy: %s\n\n<i>%s</i>' \
+            "$SHORT" "$AUTHOR_SAFE" "$TITLE_SAFE")
 
           if [ -n "$BODY" ]; then
             BODY_SAFE=$(html_encode "$BODY")
