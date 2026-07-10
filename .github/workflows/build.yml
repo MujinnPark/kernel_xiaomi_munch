@@ -146,23 +146,30 @@ jobs:
           # deliberately mean to track a different branch, that's fine — just make
           # the change here, explicitly, and update KERNEL_SOURCE_BRANCH below to
           # match. Do not go back to letting `git clone` pick for you.
-          KERNEL_SOURCE_BRANCH: android16-aptusitu
+          KERNEL_SOURCE_BRANCH: main   # CONFIRM this is the branch you actually want tracked
         run: |
           echo "Cloning branch: ${KERNEL_SOURCE_BRANCH} (pinned explicitly — see step comment)"
           git clone --depth=1 --single-branch -b "${KERNEL_SOURCE_BRANCH}" \
-            https://github.com/MujinnPark/android_kernel_xiaomi_sm8250.git \
+            https://github.com/MujinnPark/pitchkernel_android_kernel_xiaomi_sm8250.git \
             apasitu
-          ls apasitu/build.sh apasitu/build-miui.sh
+          ls apasitu/build.sh
           RESOLVED_SHA=$(git -C apasitu rev-parse --short HEAD)
           echo "KERNEL_SOURCE_BRANCH=${KERNEL_SOURCE_BRANCH}" >> $GITHUB_ENV
           echo "KERNEL_SOURCE_SHA=${RESOLVED_SHA}" >> $GITHUB_ENV
           echo "Resolved to commit: ${RESOLVED_SHA}"
 
+      - name: Init KernelSU submodule (rsuntk/KernelSU, pinned in pitchkernel source)
+        run: |
+          cd apasitu
+          git submodule update --init --recursive
+          [ -f KernelSU/kernel/Kconfig ] || { echo "FATAL: KernelSU submodule did not populate"; exit 1; }
+          echo "KernelSU submodule OK: $(git -C KernelSU rev-parse --short HEAD)"
+
       - name: Verify ATFWD-daemon not excluded from sucompat
         run: |
-          if grep -rq "ATFWD-daemon" apasitu/kernel/ksu/ 2>/dev/null; then
+          if grep -rq "ATFWD-daemon" apasitu/KernelSU/ 2>/dev/null; then
             echo "FATAL: ATFWD-daemon still present in KernelSU source after patch step."
-            grep -rn "ATFWD-daemon" apasitu/kernel/ksu/
+            grep -rn "ATFWD-daemon" apasitu/KernelSU/
             exit 1
           fi
           echo "OK: ATFWD-daemon not found in KernelSU exclusion source."
@@ -649,7 +656,7 @@ jobs:
 
             **Build date:** ${{ env.BUILD_DATE }}
             **Type:** ${{ env.BUILD_TYPE }}
-            **Base:** MujinnPark/android_kernel_xiaomi_sm8250 @ `${{ env.KERNEL_SOURCE_BRANCH }}` (`${{ env.KERNEL_SOURCE_SHA }}`)
+            **Base:** MujinnPark/pitchkernel_android_kernel_xiaomi_sm8250 @ `${{ env.KERNEL_SOURCE_BRANCH }}` (`${{ env.KERNEL_SOURCE_SHA }}`)
             **Toolchain:** ZyCromerZ Clang 16.0.6
 
             ### Features
