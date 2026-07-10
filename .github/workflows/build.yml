@@ -528,9 +528,22 @@ jobs:
           cp -v "$AK3_OURS/patch/pitchkernel_cpufreq.sh" "$AK3_BUILT/patch/pitchkernel_cpufreq.sh"
           cp -v "$AK3_OURS/patch/pitchkernel_banking_prep.sh" "$AK3_BUILT/patch/pitchkernel_banking_prep.sh"
           cp -v "$AK3_OURS/patch/pitchkernel_sepolicy.sh" "$AK3_BUILT/patch/pitchkernel_sepolicy.sh"
+          # PitchKernel: v2 scheduler/GPU tuning, added after the original
+          # three files above. This list is hardcoded, not a directory copy,
+          # so anykernel.sh's own install step (which does `cp
+          # $AKHOME/patch/pitchkernel_v2_tuning.sh ...`) silently found nothing
+          # to copy in flashed zips built before this line existed -- confirmed
+          # via a real recovery.log showing "WARNING: could not write v2
+          # tuning script to post-fs-data.d" on a build whose extracted file
+          # list never included patch/pitchkernel_v2_tuning.sh at all. Keep
+          # this list and anykernel.sh's install block in sync: adding a file
+          # to PitchKernel/anykernel/patch/ does NOT automatically make it
+          # into the built zip without an explicit line here.
+          cp -v "$AK3_OURS/patch/pitchkernel_v2_tuning.sh" "$AK3_BUILT/patch/pitchkernel_v2_tuning.sh"
           chmod 755 "$AK3_BUILT/patch/pitchkernel_cpufreq.sh"
           chmod 755 "$AK3_BUILT/patch/pitchkernel_banking_prep.sh"
           chmod 755 "$AK3_BUILT/patch/pitchkernel_sepolicy.sh"
+          chmod 755 "$AK3_BUILT/patch/pitchkernel_v2_tuning.sh"
 
           echo "Verifying overlaid files:"
           grep -m1 "PitchKernel by Mujinn" "$AK3_BUILT/anykernel.sh" \
@@ -539,6 +552,8 @@ jobs:
             || { echo "ERROR: pitchkernel_cpufreq.sh missing expected content"; exit 1; }
           test -f "$AK3_BUILT/patch/pitchkernel_banking_prep.sh" \
             || { echo "ERROR: pitchkernel_banking_prep.sh was not overlaid"; exit 1; }
+          test -f "$AK3_BUILT/patch/pitchkernel_v2_tuning.sh" \
+            || { echo "ERROR: pitchkernel_v2_tuning.sh was not overlaid"; exit 1; }
           echo "Overlay complete."
 
       - name: Package zip
