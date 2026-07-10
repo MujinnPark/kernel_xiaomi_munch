@@ -125,11 +125,13 @@ jobs:
           # the old key would silently corrupt/mismatch direct-mode lookups. Do not
           # revert this key to the old "pitchkernel-ccache-munch-..." namespace unless
           # ccache-ECS is removed.
-          key: pitchkernel-ccache-ecs-munch-${{ github.ref_name }}-${{ hashFiles('apasitu/**/*.c', 'apasitu/**/*.h', 'apasitu/**/Kconfig', 'apasitu/**/Makefile', 'apasitu/arch/arm64/configs/munch_defconfig') }}
+          # TEMPORARY A/B TEST: isolated namespace so stock ccache never reads
+          # an ECS-format cache (format mismatch would corrupt results). Revert
+          # to the pitchkernel-ccache-ecs-... key above once done testing.
+          key: pitchkernel-ccache-stockcc-test-${{ github.ref_name }}-${{ hashFiles('apasitu/**/*.c', 'apasitu/**/*.h', 'apasitu/**/Kconfig', 'apasitu/**/Makefile', 'apasitu/arch/arm64/configs/munch_defconfig') }}
           restore-keys: |
-            pitchkernel-ccache-ecs-munch-${{ github.ref_name }}-
-            pitchkernel-ccache-ecs-munch-
-            pitchkernel-ccache-ecs-
+            pitchkernel-ccache-stockcc-test-${{ github.ref_name }}-
+            pitchkernel-ccache-stockcc-test-
 
       - name: Warn on ccache fallback key
         if: steps.ccache-restore.outputs.cache-hit != 'true'
@@ -137,6 +139,10 @@ jobs:
           echo "::warning::ccache did not get an exact primary-key hit this run (cache-hit=${{ steps.ccache-restore.outputs.cache-hit }}). It may have restored from an older fallback key — cache could be stale relative to this commit."
 
       - name: Setup ccache-ECS
+        # TEMPORARY A/B TEST: disabled to compare stock apt ccache 4.9.1
+        # (stat-based hit checks) against ccache-ECS's hash-based validation
+        # mode. Re-enable by removing `if: false` once the A/B is done.
+        if: false
         run: |
           # cctv18/ccache-ECS (fork of ccache/ccache, base v4.13.5) — adds ECS cache
           # validation mode: when CCACHE_IS_KERNEL_COMPILING=true is set, it hashes
