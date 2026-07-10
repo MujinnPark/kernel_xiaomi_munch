@@ -146,7 +146,7 @@ jobs:
           # deliberately mean to track a different branch, that's fine — just make
           # the change here, explicitly, and update KERNEL_SOURCE_BRANCH below to
           # match. Do not go back to letting `git clone` pick for you.
-          KERNEL_SOURCE_BRANCH: main   # CONFIRM this is the branch you actually want tracked
+          KERNEL_SOURCE_BRANCH: '16.2'   # confirmed via: git ls-remote --heads <repo> — only branch that exists
         run: |
           echo "Cloning branch: ${KERNEL_SOURCE_BRANCH} (pinned explicitly — see step comment)"
           git clone --depth=1 --single-branch -b "${KERNEL_SOURCE_BRANCH}" \
