@@ -172,10 +172,11 @@ jobs:
           echo "-pitchkernel" > apasitu/localversion-st
           echo "" > apasitu/localversion-cip
 
-      - name: Point AnyKernel3 to PitchKernel fork
+      - name: Verify AnyKernel3 target in build.sh
         run: |
-          sed -i 's#https://github.com/AstideLabs/AnyKernel3#https://github.com/MujinnPark/AnyKernel3#' \
-            apasitu/build.sh apasitu/build-miui.sh
+          grep -q '^GIT=olzhas0986' apasitu/build.sh || { echo "FATAL: GIT= var missing/changed"; exit 1; }
+          grep -q '^ANY_KERNEL_REPO_B=perf' apasitu/build.sh || { echo "FATAL: ANY_KERNEL_REPO_B= var missing/changed"; exit 1; }
+          echo "OK: build.sh targets olzhas0986/Anykernel3@perf as expected."
 
       - name: Patch defconfig
         run: |
@@ -266,7 +267,10 @@ jobs:
           CCACHE_IS_KERNEL_COMPILING: 'true'
         run: |
           cd apasitu
-          chmod +x build.sh build-miui.sh
+          chmod +x build.sh
+          sed -i -e "s#^MAINPATH=.*#MAINPATH=$(pwd)#" -e "s#^KERNEL_PATH=.*#KERNEL_PATH=$(pwd)#" build.sh
+          export DTS="out/arch/arm64/boot"
+          export VERBOSE=0
           # PitchKernel: ReSukiSU's setup.sh (pulled fresh from upstream inside
           # build.sh) runs a GKI-oriented compat probe that greps for
           # include/linux/seccomp_types.h. That header was introduced upstream
@@ -287,11 +291,8 @@ jobs:
           # will not be present in THIS build's log -- expected and fine for
           # a one-off timing test. Do not leave the pipeline in this state;
           # both need to come back once the slowdown mechanism is confirmed.
-          if [ "${{ inputs.ksu }}" == "true" ]; then
-            bash ${{ inputs.script }} munch ksu
-          else
-            bash ${{ inputs.script }} munch
-          fi
+          bash "${{ inputs.script }}"
+          [ -f perf/Image ] || { echo "FATAL: perf/Image not produced"; ls -la perf/ 2>/dev/null; exit 1; }
 
       - name: DEBUG - snapshot ReSukiSU/SUSFS generated source layout
         # PitchKernel: temporary, one-off diagnostic step. ReSukiSU's setup.sh
@@ -496,7 +497,7 @@ jobs:
 
       - name: Verify ak3-core.sh is complete
         run: |
-          TARGET="apasitu/anykernel/tools/ak3-core.sh"
+          TARGET="apasitu/perf/tools/ak3-core.sh"
           [ -f "$TARGET" ] || { echo "ERROR: $TARGET not found — build may have failed"; exit 1; }
           LINES=$(wc -l < "$TARGET")
           echo "ak3-core.sh: $LINES lines"
@@ -517,7 +518,7 @@ jobs:
 
       - name: Overlay PitchKernel AnyKernel3 files
         run: |
-          AK3_BUILT="apasitu/anykernel"
+          AK3_BUILT="apasitu/perf"
           AK3_OURS="PitchKernel/anykernel"
           [ -d "$AK3_BUILT" ] || { echo "ERROR: $AK3_BUILT not found — build failed"; exit 1; }
           [ -d "$AK3_OURS"  ] || { echo "ERROR: $AK3_OURS not found — missing from repo"; exit 1; }
@@ -555,52 +556,21 @@ jobs:
           echo "BUILD_TYPE=${TYPE}" >> $GITHUB_ENV
           echo "ARTIFACT_LABEL=${ARTIFACT_LABEL}" >> $GITHUB_ENV
 
-          AOSP_SRC_ZIP=$(find apasitu -maxdepth 1 -name "PitchKernel_AOSP_*.zip" | head -1)
-          if [ -z "$AOSP_SRC_ZIP" ] || [ ! -f "$AOSP_SRC_ZIP" ]; then
-            echo "ERROR: PitchKernel_AOSP_*.zip not found. Available zips:"
-            find apasitu -maxdepth 1 -name "*.zip"
-            exit 1
-          fi
-          echo "AOSP source: $AOSP_SRC_ZIP ($(du -sh $AOSP_SRC_ZIP | cut -f1))"
-
-          # build.sh (the "AOSP+MIUI dual zip" path) also produces PitchKernel_MIUI_*.zip
-          # with its own Image/dtb/dtbo.img — these are NOT interchangeable with the
-          # AOSP ones (different config, different dtbo). Both must be present for
-          # the dual-image AK3 flash pattern to actually work for MIUI/HyperOS users.
-          MIUI_SRC_ZIP=$(find apasitu -maxdepth 1 -name "PitchKernel_MIUI_*.zip" | head -1)
-          if [ -z "$MIUI_SRC_ZIP" ] || [ ! -f "$MIUI_SRC_ZIP" ]; then
-            echo "ERROR: PitchKernel_MIUI_*.zip not found. Available zips:"
-            find apasitu -maxdepth 1 -name "*.zip"
-            echo "If you intentionally ran a build that skips MIUI, this packaging step"
-            echo "needs a --skip-miui flag added — it currently assumes both zips exist."
-            exit 1
-          fi
-          echo "MIUI source: $MIUI_SRC_ZIP ($(du -sh $MIUI_SRC_ZIP | cut -f1))"
-
-          mkdir -p /tmp/kernel_files/aosp /tmp/kernel_files/miui
-          unzip -q -j "$AOSP_SRC_ZIP" \
-            "kernels/aosp/Image" \
-            "kernels/aosp/dtb" \
-            "kernels/aosp/dtbo.img" \
-            -d /tmp/kernel_files/aosp/
-          unzip -q -j "$MIUI_SRC_ZIP" \
-            "kernels/miui/Image" \
-            "kernels/miui/dtb" \
-            "kernels/miui/dtbo.img" \
-            -d /tmp/kernel_files/miui/
-
-          for os in aosp miui; do
-            for f in Image dtb dtbo.img; do
-              if [ ! -f "/tmp/kernel_files/$os/$f" ]; then
-                echo "ERROR: $f not found for $os"
-                exit 1
-              fi
-            done
+          SKIP_MIUI=true
+          mkdir -p /tmp/kernel_files/aosp
+          for f in Image dtb dtbo.img; do
+            SRC="apasitu/perf/$f"
+            [ -f "$SRC" ] || { echo "ERROR: $SRC not found"; ls -la apasitu/perf/; exit 1; }
+            cp "$SRC" "/tmp/kernel_files/aosp/$f"
           done
-          echo "Kernel files:"
-          ls -lh /tmp/kernel_files/aosp /tmp/kernel_files/miui
+          echo "AOSP kernel files:"; ls -lh /tmp/kernel_files/aosp
 
-          AK3_DIR="apasitu/anykernel"
+          if [ "$SKIP_MIUI" != "true" ]; then
+            echo "FATAL: SKIP_MIUI=false but no MIUI build path exists yet"; exit 1
+          fi
+          echo "SKIP_MIUI=true — packaging AOSP-only this run."
+
+          AK3_DIR="apasitu/perf"
           [ -d "$AK3_DIR" ] || { echo "ERROR: $AK3_DIR not found"; ls apasitu/; exit 1; }
 
           WORKDIR="/tmp/ak3_build"
@@ -617,23 +587,15 @@ jobs:
             { echo "FATAL: update-binary syntax error"; exit 1; }
 
           rm -rf "$WORKDIR/kernels"
-          mkdir -p "$WORKDIR/kernels/aosp" "$WORKDIR/kernels/miui"
+          mkdir -p "$WORKDIR/kernels/aosp"
           cp /tmp/kernel_files/aosp/Image    "$WORKDIR/kernels/aosp/"
           cp /tmp/kernel_files/aosp/dtb      "$WORKDIR/kernels/aosp/"
           cp /tmp/kernel_files/aosp/dtbo.img "$WORKDIR/kernels/aosp/"
-          cp /tmp/kernel_files/miui/Image    "$WORKDIR/kernels/miui/"
-          cp /tmp/kernel_files/miui/dtb      "$WORKDIR/kernels/miui/"
-          cp /tmp/kernel_files/miui/dtbo.img "$WORKDIR/kernels/miui/"
 
           [ -f "$WORKDIR/kernels/aosp/Image" ] || \
             { echo "ERROR: AOSP Image missing after copy"; exit 1; }
-          [ -f "$WORKDIR/kernels/miui/Image" ] || \
-            { echo "ERROR: MIUI Image missing after copy"; exit 1; }
 
-          # Each ROM's own dtbo — do NOT cross-copy AOSP's dtbo to the MIUI slot or
-          # vice versa, they come from different builds with different configs.
           cp /tmp/kernel_files/aosp/dtbo.img "$WORKDIR/munch-aosp-dtbo.img"
-          cp /tmp/kernel_files/miui/dtbo.img "$WORKDIR/munch-miui-dtbo.img"
 
           ZIP_NAME="PitchKernel-${TYPE}-munch-${DATE}.zip"
 
@@ -643,8 +605,6 @@ jobs:
 
           unzip -l "$GITHUB_WORKSPACE/$ZIP_NAME" | grep -q "kernels/aosp/Image" || \
             { echo "ERROR: kernels/aosp/Image missing from $ZIP_NAME"; exit 1; }
-          unzip -l "$GITHUB_WORKSPACE/$ZIP_NAME" | grep -q "kernels/miui/Image" || \
-            { echo "ERROR: kernels/miui/Image missing from $ZIP_NAME"; exit 1; }
 
           cd "$GITHUB_WORKSPACE"
           echo "Packaged: $ZIP_NAME ($(du -sh $ZIP_NAME | cut -f1))"
