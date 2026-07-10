@@ -103,9 +103,9 @@ jobs:
             pitchkernel-ccache-ecs-
 
       - name: Warn on ccache fallback key
-        if: steps.ccache-restore.outputs.cache-matched-key != steps.ccache-restore.outputs.cache-primary-key
+        if: steps.ccache-restore.outputs.cache-hit != 'true'
         run: |
-          echo "::warning::ccache restored from a fallback key (${{ steps.ccache-restore.outputs.cache-matched-key }}), not the exact primary key (${{ steps.ccache-restore.outputs.cache-primary-key }}). Cache may be stale relative to this commit."
+          echo "::warning::ccache did not get an exact primary-key hit this run (cache-hit=${{ steps.ccache-restore.outputs.cache-hit }}). It may have restored from an older fallback key — cache could be stale relative to this commit."
 
       - name: Setup ccache-ECS
         run: |
@@ -131,6 +131,7 @@ jobs:
         run: |
           echo "nproc: $(nproc)"
           cat /proc/cpuinfo | grep "model name" | head -1
+          echo "BUILD_START_EPOCH=$(date +%s)" >> $GITHUB_ENV
           openssl speed -seconds 2 aes-256-cbc 2>&1 | tail -3
 
       - name: Setup ZyCromerZ Clang 16
