@@ -181,9 +181,8 @@ jobs:
 
       - name: Verify AnyKernel3 target in build.sh
         run: |
-          grep -q '^GIT=olzhas0986' apasitu/build.sh || { echo "FATAL: GIT= var missing/changed"; exit 1; }
-          grep -q '^ANY_KERNEL_REPO_B=perf' apasitu/build.sh || { echo "FATAL: ANY_KERNEL_REPO_B= var missing/changed"; exit 1; }
-          echo "OK: build.sh targets olzhas0986/Anykernel3@perf as expected."
+          grep -q 'https://github.com/AstideLabs/AnyKernel3' apasitu/build.sh || { echo "FATAL: AnyKernel3 clone URL missing/changed"; exit 1; }
+          echo "OK: build.sh targets AstideLabs/AnyKernel3 as expected."
 
       - name: Patch defconfig
         run: |
