@@ -297,7 +297,7 @@ jobs:
           # will not be present in THIS build's log -- expected and fine for
           # a one-off timing test. Do not leave the pipeline in this state;
           # both need to come back once the slowdown mechanism is confirmed.
-          bash "${{ inputs.script }}"
+          bash "${{ inputs.script }}" munch $([ "${{ inputs.ksu }}" == "true" ] && echo ksu)
           # NOTE: build.sh does `find $DTS -name Image -exec cat {} + > $IMGPATH` -
           # that redirect creates perf/Image (empty) BEFORE find even runs,
           # regardless of success. A bare -f check passes on a 0-byte phantom
