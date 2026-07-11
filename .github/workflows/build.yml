@@ -82,7 +82,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y build-essential git curl wget \
             bison flex zip bc cpio libssl-dev ccache \
-            python-is-python3 gcc-arm-linux-gnueabi \
+            python-is-python3 gcc-arm-linux-gnueabi gcc-aarch64-linux-gnu \
             device-tree-compiler
 
       - name: Setup ccache
@@ -299,7 +299,20 @@ jobs:
           # a one-off timing test. Do not leave the pipeline in this state;
           # both need to come back once the slowdown mechanism is confirmed.
           bash "${{ inputs.script }}"
-          [ -f perf/Image ] || { echo "FATAL: perf/Image not produced"; ls -la perf/ 2>/dev/null; exit 1; }
+          # NOTE: build.sh does `find $DTS -name Image -exec cat {} + > $IMGPATH` -
+          # that redirect creates perf/Image (empty) BEFORE find even runs,
+          # regardless of success. A bare -f check passes on a 0-byte phantom
+          # file and silently masks a completely failed build. Check size AND
+          # that a real .config/vmlinux exist, which only happen on an actual
+          # successful compile.
+          if [ ! -s perf/Image ]; then
+            echo "FATAL: perf/Image missing or empty - build did not actually compile."
+            echo "--- out/.config ---"; [ -f out/.config ] && echo "exists" || echo "MISSING"
+            echo "--- out/vmlinux ---"; [ -f out/vmlinux ] && echo "exists" || echo "MISSING"
+            ls -la perf/ 2>/dev/null || echo "perf/ does not exist"
+            exit 1
+          fi
+          echo "OK: perf/Image is $(stat -c%s perf/Image) bytes"
 
       - name: DEBUG - snapshot ReSukiSU/SUSFS generated source layout
         # PitchKernel: temporary, one-off diagnostic step. ReSukiSU's setup.sh
