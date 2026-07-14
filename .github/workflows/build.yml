@@ -128,10 +128,10 @@ jobs:
           # TEMPORARY A/B TEST: isolated namespace so stock ccache never reads
           # an ECS-format cache (format mismatch would corrupt results). Revert
           # to the pitchkernel-ccache-ecs-... key above once done testing.
-          key: pitchkernel-ccache-stockcc-test-${{ github.ref_name }}-${{ hashFiles('apasitu/**/*.c', 'apasitu/**/*.h', 'apasitu/**/Kconfig', 'apasitu/**/Makefile', 'apasitu/arch/arm64/configs/munch_defconfig') }}
+          key: pitchkernel-ccache-ecs-munch-${{ github.ref_name }}-${{ hashFiles('apasitu/**/*.c', 'apasitu/**/*.h', 'apasitu/**/Kconfig', 'apasitu/**/Makefile', 'apasitu/arch/arm64/configs/munch_defconfig') }}
           restore-keys: |
-            pitchkernel-ccache-stockcc-test-${{ github.ref_name }}-
-            pitchkernel-ccache-stockcc-test-
+            pitchkernel-ccache-ecs-munch-${{ github.ref_name }}-
+            pitchkernel-ccache-ecs-munch-
 
       - name: Warn on ccache fallback key
         if: steps.ccache-restore.outputs.cache-hit != 'true'
@@ -142,7 +142,6 @@ jobs:
         # TEMPORARY A/B TEST: disabled to compare stock apt ccache 4.9.1
         # (stat-based hit checks) against ccache-ECS's hash-based validation
         # mode. Re-enable by removing `if: false` once the A/B is done.
-        if: false
         run: |
           # cctv18/ccache-ECS (fork of ccache/ccache, base v4.13.5) — adds ECS cache
           # validation mode: when CCACHE_IS_KERNEL_COMPILING=true is set, it hashes
@@ -275,7 +274,7 @@ jobs:
           KBUILD_BUILD_TIMESTAMP: ''
           KBUILD_BUILD_USER: pitchkernel
           KBUILD_BUILD_HOST: github-actions
-          CCACHE_DIR: ~/.cache/ccache_mikernel
+          CCACHE_DIR: /home/runner/.cache/ccache_mikernel
           CCACHE_MAXSIZE: 5G
           CCACHE_COMPRESS: '1'
           CCACHE_COMPRESSLEVEL: '1'
