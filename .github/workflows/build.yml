@@ -128,7 +128,7 @@ jobs:
           # TEMPORARY A/B TEST: isolated namespace so stock ccache never reads
           # an ECS-format cache (format mismatch would corrupt results). Revert
           # to the pitchkernel-ccache-ecs-... key above once done testing.
-          key: pitchkernel-ccache-ecs-munch-${{ github.ref_name }}-${{ hashFiles('apasitu/**/*.c', 'apasitu/**/*.h', 'apasitu/**/Kconfig', 'apasitu/**/Makefile', 'apasitu/arch/arm64/configs/munch_defconfig') }}
+          key: pitchkernel-ccache-ecs-munch-${{ github.ref_name }}-${{ hashFiles('apasitu/kernel/sched/**', 'apasitu/arch/arm64/configs/munch_defconfig') }}
           restore-keys: |
             pitchkernel-ccache-ecs-munch-${{ github.ref_name }}-
             pitchkernel-ccache-ecs-munch-
