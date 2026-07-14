@@ -81,7 +81,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential git curl wget \
-            bison flex zip bc cpio libssl-dev ccache \
+            bison flex zip bc cpio libssl-dev \
             python-is-python3 gcc-arm-linux-gnueabi \
             device-tree-compiler
 
@@ -113,53 +113,6 @@ jobs:
           echo "KERNEL_SOURCE_BRANCH=${KERNEL_SOURCE_BRANCH}" >> $GITHUB_ENV
           echo "KERNEL_SOURCE_SHA=${RESOLVED_SHA}" >> $GITHUB_ENV
           echo "Resolved to commit: ${RESOLVED_SHA}"
-
-      - name: Setup ccache
-        id: ccache-restore
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/ccache_mikernel
-          # Key namespace bumped (ccache -> ccache-ecs) because ccache-ECS is built on
-          # ccache 4.13.5 and its cache format is not compatible with the ccache 4.9.1
-          # that ubuntu-latest's apt repo installs. Restoring an old-format cache under
-          # the old key would silently corrupt/mismatch direct-mode lookups. Do not
-          # revert this key to the old "pitchkernel-ccache-munch-..." namespace unless
-          # ccache-ECS is removed.
-          # TEMPORARY A/B TEST: isolated namespace so stock ccache never reads
-          # an ECS-format cache (format mismatch would corrupt results). Revert
-          # to the pitchkernel-ccache-ecs-... key above once done testing.
-          key: pitchkernel-ccache-ecs-munch-${{ github.ref_name }}-${{ hashFiles('apasitu/kernel/sched/**', 'apasitu/arch/arm64/configs/munch_defconfig') }}
-          restore-keys: |
-            pitchkernel-ccache-ecs-munch-${{ github.ref_name }}-
-            pitchkernel-ccache-ecs-munch-
-
-      - name: Warn on ccache fallback key
-        if: steps.ccache-restore.outputs.cache-hit != 'true'
-        run: |
-          echo "::warning::ccache did not get an exact primary-key hit this run (cache-hit=${{ steps.ccache-restore.outputs.cache-hit }}). It may have restored from an older fallback key — cache could be stale relative to this commit."
-
-      - name: Setup ccache-ECS
-        # TEMPORARY A/B TEST: disabled to compare stock apt ccache 4.9.1
-        # (stat-based hit checks) against ccache-ECS's hash-based validation
-        # mode. Re-enable by removing `if: false` once the A/B is done.
-        run: |
-          # cctv18/ccache-ECS (fork of ccache/ccache, base v4.13.5) — adds ECS cache
-          # validation mode: when CCACHE_IS_KERNEL_COMPILING=true is set, it hashes
-          # source + referenced headers instead of relying on size+mtime, so
-          # defconfig/config-option changes stop invalidating the whole cache.
-          # https://github.com/cctv18/ccache-ECS (release ccache-ECS-v1.0)
-          mkdir -p "$HOME/ccache-ecs/bin" "$HOME/ccache-ecs/extracted"
-          curl -fsSL -o /tmp/ccache-ecs.zip \
-            https://github.com/cctv18/ccache-ECS/releases/download/ccache-ECS-v1.0/linux-x86_64-glibc-binary.zip
-          unzip -q -o /tmp/ccache-ecs.zip -d "$HOME/ccache-ecs/extracted"
-          CCACHE_BIN=$(find "$HOME/ccache-ecs/extracted" -type f -iname 'ccache' | head -1)
-          [ -n "$CCACHE_BIN" ] || { echo "FATAL: 'ccache' binary not found inside linux-x86_64-glibc-binary.zip"; find "$HOME/ccache-ecs/extracted"; exit 1; }
-          cp "$CCACHE_BIN" "$HOME/ccache-ecs/bin/ccache"
-          chmod +x "$HOME/ccache-ecs/bin/ccache"
-          # Prepend so this shadows the apt-installed /usr/bin/ccache for every
-          # subsequent step in this job, without touching the apt install step.
-          echo "$HOME/ccache-ecs/bin" >> "$GITHUB_PATH"
-          "$HOME/ccache-ecs/bin/ccache" --version
 
       - name: CPU baseline benchmark
         run: |
@@ -275,14 +228,6 @@ jobs:
           KBUILD_BUILD_TIMESTAMP: ''
           KBUILD_BUILD_USER: pitchkernel
           KBUILD_BUILD_HOST: github-actions
-          CCACHE_DIR: /home/runner/.cache/ccache_mikernel
-          CCACHE_MAXSIZE: 5G
-          CCACHE_COMPRESS: '1'
-          CCACHE_COMPRESSLEVEL: '1'
-          CCACHE_SLOPPINESS: file_stat_matches,locale,time_macros
-          # Required to activate ccache-ECS's hash-based (not size+mtime) cache
-          # validation mode. No-op / ignored by stock ccache if this ever reverts.
-          CCACHE_IS_KERNEL_COMPILING: 'true'
         run: |
           cd apasitu
           chmod +x build.sh build-miui.sh
@@ -357,39 +302,10 @@ jobs:
             fi
           done
 
-      - name: ccache stats after build
-        # PitchKernel: added to actually answer "why did build time increase"
-        # with real ccache-reported hit/miss/size data, instead of inferring
-        # from GitHub Actions' cache transfer byte counts (which only show
-        # total bytes moved, not hit rate or whether CCACHE_MAXSIZE=5G in the
-        # "Build kernel" step's env is being honored by ccache-ECS). Confirmed
-        # by direct log comparison across 5 builds: total build time rose from
-        # 13m27s (07-06) to a sustained 16-17min (07-07 x4), and the GitHub
-        # Actions cache save size grew build-over-build. This step is the
-        # actual diagnostic; do not remove until that trend is understood.
-        #
-        # CCACHE_DIR must be re-declared here: env vars set in the "Build
-        # kernel" step's env: block do not carry over to this separate step,
-        # so without this ccache would fall back to its own default dir and
-        # report empty/wrong stats.
+      - name: Purge ccache directories
         if: always()
-        env:
-          CCACHE_DIR: /home/runner/.cache/ccache_mikernel
         run: |
-          # PitchKernel: CCACHE_DIR must use an expanded absolute path here,
-          # not "~/...". GitHub Actions' env: block does not perform shell
-          # tilde expansion (~ is only expanded by an interactive shell
-          # parsing a command line, not when it's the literal value of an
-          # env var set via YAML) -- confirmed: this step previously set
-          # CCACHE_DIR: ~/.cache/ccache_mikernel and ccache -s reported
-          # 0.0/5.0 GiB used, while `du -sh "$HOME/.cache/ccache_mikernel"`
-          # (correctly shell-expanded) found a real 1.4G directory in the
-          # same job. build.sh's own CCACHE_DIR="$HOME/..." was fine because
-          # $HOME is expanded by bash; only this step's YAML-level ~ was broken.
-          ccache -s || echo "ccache -s failed or ccache not on PATH"
-          echo ""
-          echo "--- raw cache dir size on disk vs CCACHE_MAXSIZE=5G ---"
-          du -sh "$HOME/.cache/ccache_mikernel" 2>/dev/null || echo "cache dir not found at expected path"
+          rm -rf "$HOME/.cache/ccache_mikernel" "$HOME/.ccache" "$HOME/ccache-ecs"
 
       - name: Annotate known-benign build noise
         run: |
