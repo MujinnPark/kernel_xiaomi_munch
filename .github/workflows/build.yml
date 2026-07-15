@@ -210,6 +210,36 @@ jobs:
           echo "Verifying uclamp directives:"
           grep -E "UCLAMP_TASK|LOCALVERSION_AUTO" "$DEFCONFIG" || echo "WARNING: grep found nothing"
 
+      - name: Setup ccache
+        run: |
+          # Pinned version, installed directly -- do NOT apt-get install ccache.
+          # apt's ccache drops compiler-name symlinks under /usr/lib/ccache/
+          # that silently shadow this binary if both land on PATH. Confirmed
+          # incident: two ccache installs racing on PATH caused `ccache -s` to
+          # report 0.0/5.0 GiB used against a real ~1.4G on-disk cache dir.
+          # Only this one binary may be on PATH for the build.
+          CCACHE_VERSION="4.10.2"
+          wget -q "https://github.com/ccache/ccache/releases/download/v${CCACHE_VERSION}/ccache-${CCACHE_VERSION}-linux-x86_64.tar.xz" -O ccache.tar.xz
+          tar -xf ccache.tar.xz
+          sudo install -m 755 "ccache-${CCACHE_VERSION}-linux-x86_64/ccache" /usr/local/bin/ccache
+          rm -rf ccache.tar.xz "ccache-${CCACHE_VERSION}-linux-x86_64"
+          ccache --version | head -1
+          echo "All ccache binaries visible on PATH (should be exactly one):"
+          command -v -a ccache
+
+      - name: Restore ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ccache_mikernel
+          # Key includes OS, pinned clang release, defconfig content hash, and
+          # ksu on/off (the ksu-enabled pass compiles a materially different
+          # set of translation units than the vanilla pass). restore-keys
+          # fall back progressively so a partial match beats a cold cache.
+          key: ccache-munch-${{ runner.os }}-clang16.0.6-20260510-ksu${{ inputs.ksu }}-${{ hashFiles('apasitu/arch/arm64/configs/munch_defconfig') }}
+          restore-keys: |
+            ccache-munch-${{ runner.os }}-clang16.0.6-20260510-ksu${{ inputs.ksu }}-
+            ccache-munch-${{ runner.os }}-clang16.0.6-20260510-
+
       - name: Build kernel
         # TEMPORARY TEST (see PitchKernel note below) - tee/process-substitution
         # and explicit pipefail shell removed to isolate a confirmed 3x
@@ -228,6 +258,13 @@ jobs:
           KBUILD_BUILD_TIMESTAMP: ''
           KBUILD_BUILD_USER: pitchkernel
           KBUILD_BUILD_HOST: github-actions
+          CCACHE_DIR: /home/runner/.cache/ccache_mikernel
+          CCACHE_MAXSIZE: 5G
+          CCACHE_COMPILERCHECK: content
+          CCACHE_COMPRESS: 'true'
+          CCACHE_COMPRESSLEVEL: '6'
+          CCACHE_SLOPPINESS: include_file_mtime,include_file_ctime,time_macros
+          CCACHE_BASEDIR: ${{ github.workspace }}
         run: |
           cd apasitu
           chmod +x build.sh build-miui.sh
@@ -302,10 +339,22 @@ jobs:
             fi
           done
 
-      - name: Purge ccache directories
+      - name: Report ccache stats
         if: always()
         run: |
-          rm -rf "$HOME/.cache/ccache_mikernel" "$HOME/.ccache" "$HOME/ccache-ecs"
+          ccache -s || true
+          du -sh ~/.cache/ccache_mikernel 2>/dev/null || echo "cache dir not found"
+
+      - name: Save ccache
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/ccache_mikernel
+          # actions/cache keys are immutable once written -- a save on the same
+          # restore key would silently no-op on every run after the first.
+          # run_id makes each save unique; restore-keys prefix-matching on the
+          # next run picks up the most recent save automatically.
+          key: ccache-munch-${{ runner.os }}-clang16.0.6-20260510-ksu${{ inputs.ksu }}-${{ hashFiles('apasitu/arch/arm64/configs/munch_defconfig') }}-${{ github.run_id }}
 
       - name: Annotate known-benign build noise
         run: |
