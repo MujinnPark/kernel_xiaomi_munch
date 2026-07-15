@@ -341,6 +341,13 @@ jobs:
 
       - name: Report ccache stats
         if: always()
+        env:
+          # Without this, ccache -s falls back to its default ~/.cache/ccache
+          # (empty) instead of the real cache dir the build wrote to, which is
+          # env-scoped to the Build kernel step only. This is why the previous
+          # run reported "0.0 / 5.0 GiB" while `du` found a real 828M on disk
+          # at the same path -- two different directories, not a broken cache.
+          CCACHE_DIR: /home/runner/.cache/ccache_mikernel
         run: |
           ccache -s || true
           du -sh ~/.cache/ccache_mikernel 2>/dev/null || echo "cache dir not found"
