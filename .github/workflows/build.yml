@@ -468,7 +468,7 @@ jobs:
 
       - name: Verify pitchkernel scripts are in the AK3 overlay
         run: |
-          for f in pitchkernel_cpufreq.sh pitchkernel_banking_prep.sh pitchkernel_sepolicy.sh; do
+          for f in pitchkernel_cpufreq.sh pitchkernel_banking_prep.sh pitchkernel_sepolicy.sh pitchkernel_v3_tuning.sh; do
             TARGET="PitchKernel/anykernel/patch/$f"
             if [ ! -f "$TARGET" ]; then
               echo "FATAL: $TARGET missing from repo — will not be installed to post-fs-data.d"
@@ -530,11 +530,11 @@ jobs:
           # this list and anykernel.sh's install block in sync: adding a file
           # to PitchKernel/anykernel/patch/ does NOT automatically make it
           # into the built zip without an explicit line here.
-          cp -v "$AK3_OURS/patch/pitchkernel_v2_tuning.sh" "$AK3_BUILT/patch/pitchkernel_v2_tuning.sh"
+          cp -v "$AK3_OURS/patch/pitchkernel_v3_tuning.sh" "$AK3_BUILT/patch/pitchkernel_v3_tuning.sh"
           chmod 755 "$AK3_BUILT/patch/pitchkernel_cpufreq.sh"
           chmod 755 "$AK3_BUILT/patch/pitchkernel_banking_prep.sh"
           chmod 755 "$AK3_BUILT/patch/pitchkernel_sepolicy.sh"
-          chmod 755 "$AK3_BUILT/patch/pitchkernel_v2_tuning.sh"
+          chmod 755 "$AK3_BUILT/patch/pitchkernel_v3_tuning.sh"
 
           echo "Verifying overlaid files:"
           grep -m1 "PitchKernel by Mujinn" "$AK3_BUILT/anykernel.sh" \
@@ -543,8 +543,8 @@ jobs:
             || { echo "ERROR: pitchkernel_cpufreq.sh missing expected content"; exit 1; }
           test -f "$AK3_BUILT/patch/pitchkernel_banking_prep.sh" \
             || { echo "ERROR: pitchkernel_banking_prep.sh was not overlaid"; exit 1; }
-          test -f "$AK3_BUILT/patch/pitchkernel_v2_tuning.sh" \
-            || { echo "ERROR: pitchkernel_v2_tuning.sh was not overlaid"; exit 1; }
+          test -f "$AK3_BUILT/patch/pitchkernel_v3_tuning.sh" \
+            || { echo "ERROR: pitchkernel_v3_tuning.sh was not overlaid"; exit 1; }
           echo "Overlay complete."
 
       - name: Package zip
