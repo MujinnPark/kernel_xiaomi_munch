@@ -225,7 +225,7 @@ jobs:
           rm -rf ccache.tar.xz "ccache-${CCACHE_VERSION}-linux-x86_64"
           ccache --version | head -1
           echo "All ccache binaries visible on PATH (should be exactly one):"
-          command -v -a ccache
+          which -a ccache || type -a ccache
 
       - name: Restore ccache
         uses: actions/cache@v4
