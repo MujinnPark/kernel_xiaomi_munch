@@ -121,13 +121,13 @@ jobs:
           echo "BUILD_START_EPOCH=$(date +%s)" >> $GITHUB_ENV
           openssl speed -seconds 2 aes-256-cbc 2>&1 | tail -3
 
-      - name: Setup ZyCromerZ Clang 16
+      - name: Setup Neutron Clang
         run: |
-          mkdir -p $HOME/zyc-clang
-          wget -q https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260510-release/Clang-16.0.6-20260510.tar.gz \
-            -O clang.tar.gz
-          tar -zxf clang.tar.gz -C $HOME/zyc-clang
-          rm clang.tar.gz
+          mkdir -p "$HOME/neutron-clang"
+          cd "$HOME/neutron-clang"
+          curl -LO "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman"
+          chmod +x antman
+          ./antman -S=30062026
 
       - name: Verify ATFWD-daemon not excluded from sucompat
         run: |
@@ -235,10 +235,10 @@ jobs:
           # ksu on/off (the ksu-enabled pass compiles a materially different
           # set of translation units than the vanilla pass). restore-keys
           # fall back progressively so a partial match beats a cold cache.
-          key: ccache-munch-${{ runner.os }}-clang16.0.6-20260510-ksu${{ inputs.ksu }}-${{ hashFiles('apasitu/arch/arm64/configs/munch_defconfig') }}
+          key: ccache-munch-${{ runner.os }}-neutronclang23-30062026-ksu${{ inputs.ksu }}-${{ hashFiles('apasitu/arch/arm64/configs/munch_defconfig') }}
           restore-keys: |
-            ccache-munch-${{ runner.os }}-clang16.0.6-20260510-ksu${{ inputs.ksu }}-
-            ccache-munch-${{ runner.os }}-clang16.0.6-20260510-
+            ccache-munch-${{ runner.os }}-neutronclang23-30062026-ksu${{ inputs.ksu }}-
+            ccache-munch-${{ runner.os }}-neutronclang23-30062026-
 
       - name: Build kernel
         # TEMPORARY TEST (see PitchKernel note below) - tee/process-substitution
@@ -361,7 +361,7 @@ jobs:
           # restore key would silently no-op on every run after the first.
           # run_id makes each save unique; restore-keys prefix-matching on the
           # next run picks up the most recent save automatically.
-          key: ccache-munch-${{ runner.os }}-clang16.0.6-20260510-ksu${{ inputs.ksu }}-${{ hashFiles('apasitu/arch/arm64/configs/munch_defconfig') }}-${{ github.run_id }}
+          key: ccache-munch-${{ runner.os }}-neutronclang23-30062026-ksu${{ inputs.ksu }}-${{ hashFiles('apasitu/arch/arm64/configs/munch_defconfig') }}-${{ github.run_id }}
 
       - name: Annotate known-benign build noise
         run: |
@@ -680,7 +680,7 @@ jobs:
           # run, so a future branch drift shows up in the Telegram message
           # instead of being invisible again.
           KERNEL_BRANCH: "${{ env.KERNEL_SOURCE_BRANCH }}@${{ env.KERNEL_SOURCE_SHA }}"
-          COMPILER_STRING: "ZyCromerZ Clang 16.0.6"
+          COMPILER_STRING: "Neutron Clang 30062026"
           KERNEL_SRC: "apasitu"
         run: |
           source PitchKernel/release/telegram.sh
@@ -696,7 +696,7 @@ jobs:
             **Build date:** ${{ env.BUILD_DATE }}
             **Type:** ${{ env.BUILD_TYPE }}
             **Base:** MujinnPark/android_kernel_xiaomi_sm8250 @ `${{ env.KERNEL_SOURCE_BRANCH }}` (`${{ env.KERNEL_SOURCE_SHA }}`)
-            **Toolchain:** ZyCromerZ Clang 16.0.6
+            **Toolchain:** Neutron Clang 30062026
 
             ### Features
             - ${{ env.ROOT_PROVIDER }} + SUSFS (${{ inputs.ksu && 'enabled' || 'disabled' }})
