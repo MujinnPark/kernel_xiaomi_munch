@@ -9,19 +9,42 @@ diff --git a/drivers/power/supply/qcom/smb5-lib-munch.h b/drivers/power/supply/q
  #define HVDCP2_ICL_VOTER		"HVDCP2_ICL_VOTER"
  #define HVDCP2_FCC_VOTER		"HVDCP2_FCC_VOTER"
  #define AICL_THRESHOLD_VOTER		"AICL_THRESHOLD_VOTER"
+@@ -660,6 +661,7 @@
+ 	struct work_struct	batt_verify_update_work;
+ 	struct work_struct	plugin_check_time_work;
+ 	struct delayed_work	fake_plug_out_check_work;
++	struct delayed_work	bypass_band_work;
+ 	struct delayed_work	ps_change_timeout_work;
+ 	struct delayed_work	clear_hdc_work;
+ 	struct delayed_work	icl_change_work;
 diff --git a/drivers/power/supply/qcom/smb5-lib-munch.c b/drivers/power/supply/qcom/smb5-lib-munch.c
 --- a/drivers/power/supply/qcom/smb5-lib-munch.c
 +++ b/drivers/power/supply/qcom/smb5-lib-munch.c
-@@ -43,6 +43,8 @@
+@@ -43,6 +43,23 @@
  	|| typec_mode == POWER_SUPPLY_TYPEC_SOURCE_HIGH)	\
  	&& (!chg->typec_legacy || chg->typec_legacy_use_rp_icl))
  
 +static int bypass_charging = 0;
 +
++/*
++ * Software charge-band control (see smblib_bypass_band_work below).
++ * True hardware power-path-independent bypass could not be confirmed on
++ * this board's SMB5 revision - POWER_PATH_STATUS_REG is read-only in this
++ * driver and field testing showed input_suspend=2 does not stop battery
++ * discharge. This holds capacity in [target-band, target] instead by
++ * toggling real charging on/off, same effect as any charge-limit feature.
++ * To change target or band, edit the values below and rebuild - these are
++ * not runtime-tunable (this file is built statically, not as a loadable
++ * module, so there is no reliable sysfs path to expose module params here).
++ */
++static int bypass_band_target = 80;
++static int bypass_band_width = 2;
++static bool bypass_band_holding;
++
  bool off_charge_flag;
  static bool first_boot_flag;
  
-@@ -2401,9 +2403,13 @@
+@@ -2401,9 +2418,13 @@
  int smblib_get_prop_input_suspend(struct smb_charger *chg,
  				  union power_supply_propval *val)
  {
@@ -38,7 +61,7 @@ diff --git a/drivers/power/supply/qcom/smb5-lib-munch.c b/drivers/power/supply/q
  	return 0;
  }
  
-@@ -3169,20 +3175,37 @@
+@@ -3169,20 +3190,43 @@
  	int rc;
  
  	/* vote 0mA when suspended */
@@ -61,12 +84,18 @@ diff --git a/drivers/power/supply/qcom/smb5-lib-munch.c b/drivers/power/supply/q
 +	if (val->intval == 1) {
 +		rc = vote(chg->chg_disable_votable, BYPASS_VOTER, 1, 0);
 +		bypass_charging = 0;
++		bypass_band_holding = false;
++		cancel_delayed_work_sync(&chg->bypass_band_work);
 +	} else if (val->intval == 2) {
-+		rc = vote(chg->chg_disable_votable, BYPASS_VOTER, 0, 0);
 +		bypass_charging = 1;
++		bypass_band_holding = false;
++		rc = 0;
++		schedule_delayed_work(&chg->bypass_band_work, 0);
 +	} else {
 +		rc = vote(chg->chg_disable_votable, BYPASS_VOTER, 0, 0);
 +		bypass_charging = 0;
++		bypass_band_holding = false;
++		cancel_delayed_work_sync(&chg->bypass_band_work);
 +	}
 +
 +	if (rc < 0) {
@@ -78,7 +107,7 @@ diff --git a/drivers/power/supply/qcom/smb5-lib-munch.c b/drivers/power/supply/q
  	power_supply_changed(chg->batt_psy);
  	return rc;
  }
-@@ -3490,6 +3513,9 @@
+@@ -3490,6 +3534,9 @@
  	int thermal_fcc_ua = 0;
  	int rc;
  
@@ -88,7 +117,7 @@ diff --git a/drivers/power/supply/qcom/smb5-lib-munch.c b/drivers/power/supply/q
  	if (chg->system_temp_level >= MAX_TEMP_LEVEL)
  		return 0;
  
-@@ -3579,6 +3605,9 @@
+@@ -3579,6 +3626,9 @@
  	struct smb_charger *chg = container_of(work, struct smb_charger,
  			thermal_setting_work.work);
  
@@ -98,7 +127,82 @@ diff --git a/drivers/power/supply/qcom/smb5-lib-munch.c b/drivers/power/supply/q
  	if (chg->pps_thermal_level > chg->system_temp_level) {
  		if (chg->pps_thermal_level - chg->system_temp_level >= 2)
  			chg->pps_thermal_level -= 2;
-@@ -3638,6 +3667,9 @@
+@@ -3597,6 +3647,74 @@
+ 		schedule_delayed_work(&chg->thermal_setting_work, 3 * HZ);
+ }
+ 
++/*
++ * smblib_bypass_band_work - software charge-band control.
++ *
++ * True PMIC power-path-independent bypass (powering the system from VBUS
++ * while leaving the battery FET open) could not be confirmed to exist on
++ * this board's SMB5 revision: POWER_PATH_STATUS_REG is read-only in this
++ * driver, and field testing showed that disabling charging via
++ * CHARGING_ENABLE_CMD_BIT (the only mechanism this driver exposes) simply
++ * halts input current rather than redirecting it - the device discharges
++ * normally instead of running off USB power.
++ *
++ * This holds capacity in [bypass_band_target - bypass_band_width,
++ * bypass_band_target] by toggling REAL charging on/off via the same
++ * BYPASS_VOTER vote the bypass_charging input_suspend path already uses.
++ * This does not power the device without touching the battery - it reduces
++ * time spent at high SoC under sustained load, which is what actually
++ * drives the heat/wear bypass charging is meant to address.
++ *
++ * Runs only while bypass_charging is active and USB is present; reschedules
++ * itself every 5s. Unplugging always clears the vote so charging is never
++ * left stuck disabled without a cable connected.
++ */
++static void smblib_bypass_band_work(struct work_struct *work)
++{
++	struct smb_charger *chg = container_of(work, struct smb_charger,
++			bypass_band_work.work);
++	union power_supply_propval pval = {0, };
++	int rc, capacity;
++
++	if (!bypass_charging)
++		return;
++
++	rc = smblib_get_prop_usb_present(chg, &pval);
++	if (rc < 0 || !pval.intval) {
++		/* not plugged in: never leave charging disabled */
++		if (bypass_band_holding) {
++			vote(chg->chg_disable_votable, BYPASS_VOTER, 0, 0);
++			bypass_band_holding = false;
++		}
++		schedule_delayed_work(&chg->bypass_band_work, 15 * HZ);
++		return;
++	}
++
++	rc = smblib_get_prop_batt_capacity(chg, &pval);
++	if (rc < 0) {
++		schedule_delayed_work(&chg->bypass_band_work, 5 * HZ);
++		return;
++	}
++	capacity = pval.intval;
++
++	if (!bypass_band_holding && capacity >= bypass_band_target) {
++		vote(chg->chg_disable_votable, BYPASS_VOTER, 1, 0);
++		bypass_band_holding = true;
++		smblib_dbg(chg, PR_MISC,
++			"bypass_band: cap=%d >= target=%d, holding\n",
++			capacity, bypass_band_target);
++	} else if (bypass_band_holding &&
++			capacity <= (bypass_band_target - bypass_band_width)) {
++		vote(chg->chg_disable_votable, BYPASS_VOTER, 0, 0);
++		bypass_band_holding = false;
++		smblib_dbg(chg, PR_MISC,
++			"bypass_band: cap=%d <= %d, resuming charge\n",
++			capacity, bypass_band_target - bypass_band_width);
++	}
++
++	schedule_delayed_work(&chg->bypass_band_work, 5 * HZ);
++}
++
+ int smblib_set_prop_system_temp_level(struct smb_charger *chg,
+ 				const union power_supply_propval *val)
+ {
+@@ -3638,6 +3756,9 @@
  	vote(chg->chg_disable_votable, THERMAL_DAEMON_VOTER, false, 0);
  #endif
  
@@ -108,3 +212,19 @@ diff --git a/drivers/power/supply/qcom/smb5-lib-munch.c b/drivers/power/supply/q
  	if (chg->pd_active == POWER_SUPPLY_PD_PPS_ACTIVE)
  		schedule_delayed_work(&chg->thermal_setting_work, 3 * HZ);
  	else
+@@ -12465,6 +12586,7 @@
+ 	INIT_WORK(&chg->batt_verify_update_work, smblib_batt_verify_update_work);
+ 	INIT_WORK(&chg->plugin_check_time_work, smblib_plugin_check_time_work);
+ 	INIT_DELAYED_WORK(&chg->fake_plug_out_check_work, smblib_fake_plug_out_check_work);
++	INIT_DELAYED_WORK(&chg->bypass_band_work, smblib_bypass_band_work);
+ 	INIT_DELAYED_WORK(&chg->clear_hdc_work, clear_hdc_work);
+ 	INIT_DELAYED_WORK(&chg->icl_change_work, smblib_icl_change_work);
+ 	INIT_DELAYED_WORK(&chg->dc_power_work, smblib_dc_power_work);
+@@ -12668,6 +12790,7 @@
+ 		cancel_work_sync(&chg->batt_verify_update_work);
+ 		cancel_work_sync(&chg->plugin_check_time_work);
+ 		cancel_delayed_work_sync(&chg->fake_plug_out_check_work);
++		cancel_delayed_work_sync(&chg->bypass_band_work);
+ 		cancel_delayed_work_sync(&chg->clear_hdc_work);
+ 		cancel_delayed_work_sync(&chg->icl_change_work);
+ 		cancel_delayed_work_sync(&chg->dc_power_work);
