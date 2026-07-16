@@ -32,6 +32,7 @@
 #     it nailed down: `cat /sys/class/kgsl/kgsl-3d0/freq_table_mhz` and
 #     send it back before relying on this in production.
 
+echo "v3 script started: $(date) pwd=$(pwd) args=$@" >> /data/local/tmp/pitchkernel_v3_proof.txt 2>&1
 LOG_TAG="PitchKernelV3"
 log_rw() {
     path="$1"
