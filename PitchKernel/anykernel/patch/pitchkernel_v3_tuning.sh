@@ -1,4 +1,5 @@
 #!/system/bin/sh
+exec >> /data/local/tmp/pitchkernel_v3_proof.txt 2>&1
 # PitchKernel v3 — scheduler/GPU tuning addition
 # Target: munch (POCO F4 / Redmi K40S), SM8250/Snapdragon 870, Adreno 650
 # Kernel confirmed: 4.19.325-pitchkernel+ (own build, 2026-07-08)
