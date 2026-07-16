@@ -308,14 +308,6 @@ jobs:
             exit "$BUILD_EXIT"
           fi
 
-      - name: Upload full build log on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pitchkernel-build-step-log
-          path: /tmp/pitchkernel-build-step.log
-          retention-days: 7
-
       - name: DEBUG - snapshot ReSukiSU/SUSFS generated source layout
         # PitchKernel: temporary, one-off diagnostic step. ReSukiSU's setup.sh
         # (fetched fresh from upstream in the "Build kernel" step above) writes
@@ -475,6 +467,27 @@ jobs:
           fi
 
           echo "No LLVM LTO broken-pipe errors found in build log. LTO thread cap is holding."
+
+      - name: Upload full build log on failure
+        # PitchKernel: originally placed right after "Build kernel" -- wrong.
+        # if: failure() only evaluates true once some step earlier in the job
+        # has already failed. build.sh itself can exit 0 (compile+package
+        # succeeds) while a later gate step (e.g. the broken-pipe check above)
+        # is what actually fails the job -- confirmed in run 79949305509,
+        # where build.sh produced a flashable zip successfully and this step,
+        # in its old position, never ran because nothing had failed yet at
+        # that point in sequence. Moved here, after every step that can
+        # currently fail the job (LTO gate, and SUSFS-compiled-in gate below
+        # would also need this if it can fail before packaging -- verify if
+        # that step is ever moved earlier than this one). If more hard-fail
+        # gates are added later in the job, keep this upload step positioned
+        # after all of them, not just the LTO one.
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pitchkernel-build-step-log
+          path: /tmp/pitchkernel-build-step.log
+          retention-days: 7
 
       - name: Verify SUSFS actually compiled in
         run: |
