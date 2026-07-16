@@ -284,6 +284,13 @@ jobs:
           CCACHE_COMPRESSLEVEL: '6'
           CCACHE_SLOPPINESS: include_file_mtime,include_file_ctime,time_macros
           CCACHE_BASEDIR: ${{ github.workspace }}
+          # PitchKernel: DIAGNOSTIC, remove this line once the ccache-vs-
+          # broken-pipe question is answered (see build.sh's long comment
+          # around PITCHKERNEL_NO_CCACHE for the full evidence trail). This
+          # run will be slower than normal -- ccache is fully bypassed, so
+          # every object file compiles from scratch with zero cache reuse.
+          # Do not leave this set for regular builds.
+          PITCHKERNEL_NO_CCACHE: '1'
         run: |
           cd apasitu
           chmod +x build.sh build-miui.sh
