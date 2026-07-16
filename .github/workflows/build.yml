@@ -114,6 +114,14 @@ jobs:
           echo "KERNEL_SOURCE_SHA=${RESOLVED_SHA}" >> $GITHUB_ENV
           echo "Resolved to commit: ${RESOLVED_SHA}"
 
+      - name: Apply bypass charging patch
+        run: |
+          echo "Applying bypass charging patch to apasitu (branch=${KERNEL_SOURCE_BRANCH}, sha=${KERNEL_SOURCE_SHA})"
+          cd apasitu
+          git apply --check ../PitchKernel/patches/bypass_charging_munch.patch
+          git apply ../PitchKernel/patches/bypass_charging_munch.patch
+          echo "Patch applied cleanly."
+
       - name: CPU baseline benchmark
         run: |
           echo "nproc: $(nproc)"
