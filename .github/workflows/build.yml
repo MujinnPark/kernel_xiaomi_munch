@@ -249,19 +249,30 @@ jobs:
             ccache-munch-${{ runner.os }}-neutronclang23-30062026-
 
       - name: Build kernel
-        # TEMPORARY TEST (see PitchKernel note below) - tee/process-substitution
-        # and explicit pipefail shell removed to isolate a confirmed 3x
-        # per-compile-call slowdown (105ms/call -> 325-355ms/call, same 8014
-        # call count, 3 consecutive identical-SHA builds) that started exactly
-        # when tee was added for the noise-annotation feature. Hypothesis:
-        # piping every one of 8000+ build output lines through a process-
-        # substitution grep filter AND tee (disk write) adds real per-line
-        # overhead during compilation itself, not just after. If this build
-        # returns to ~13-17min / ~105ms per call, the hypothesis is confirmed
-        # and tee needs to be redesigned (e.g. redirect to file only, without
-        # also duplicating to the live log stream) rather than reverted outright,
-        # since the pipefail fix (actions/runner#1955) is still needed for
-        # correctness once tee comes back.
+        # PitchKernel: log capture redesigned after a measured regression.
+        # Original design piped 8000+ build-output lines through BOTH
+        # `2> >(grep -v ...)` (process substitution) AND `tee` (live disk
+        # write + live stream duplication) simultaneously. A controlled test
+        # (tee/filter removed, 3 consecutive identical-SHA builds) showed
+        # per-compile-call time went 325-355ms -> 105ms with the same 8014
+        # call count -- a real 3x regression caused by that combination, not
+        # imagined. Root cause: synchronous per-line overhead from two
+        # concurrent consumers of a live stdout/stderr stream during the
+        # hottest part of the build.
+        #
+        # Fix: capture to file with a single buffered redirect
+        # (`> "$LOG" 2>&1`), no tee, no process substitution, no live
+        # duplication to the GHA console during compilation. This does mean
+        # per-line output will not appear in the live Actions log in real
+        # time -- it is written straight to file and only the final summary
+        # echoes below are visible live. The full log is still available to
+        # every subsequent step via $LOG (the "Annotate known-benign build
+        # noise" and "Check for unclassified build errors" steps both read
+        # it), and is uploaded as an artifact on failure so nothing is lost,
+        # it just is not streamed live. This is the tradeoff that avoids the
+        # measured 3x regression: if live streaming during compilation is
+        # ever required again, it needs a different mechanism than tee+grep
+        # on every line (e.g. periodic `tail -f` sampling), not this.
         env:
           KBUILD_BUILD_TIMESTAMP: ''
           KBUILD_BUILD_USER: pitchkernel
@@ -276,31 +287,34 @@ jobs:
         run: |
           cd apasitu
           chmod +x build.sh build-miui.sh
-          # PitchKernel: ReSukiSU's setup.sh (pulled fresh from upstream inside
-          # build.sh) runs a GKI-oriented compat probe that greps for
-          # include/linux/seccomp_types.h. That header was introduced upstream
-          # in Linux 5.x+ (split out of seccomp.h) and does not exist on this
-          # 4.19.325 non-GKI tree, so the grep fails harmlessly and ReSukiSU
-          # just skips that compat shim. The grep runs from a process nested
-          # inside setup.sh's own build/config step, so filtering stderr
-          # inside build.sh via `2> >(...)` does not reliably catch it -
-          # nested subprocesses can reopen fd 2 in ways that bypass the
-          # parent's process substitution. Filtering the whole step's output
-          # here is reliable regardless of nesting depth. Only this exact
-          # known-benign line is stripped; any other ReSukiSU/setup output,
-          # including real new failures, still passes through untouched.
-          #
-          # TEMPORARILY REMOVED FOR THIS TEST: the `2> >(grep -v ...)` filter
-          # and `| tee /tmp/pitchkernel-build-step.log`. This means the
-          # seccomp_types.h noise and the noise-annotation step's input file
-          # will not be present in THIS build's log -- expected and fine for
-          # a one-off timing test. Do not leave the pipeline in this state;
-          # both need to come back once the slowdown mechanism is confirmed.
+          LOG="/tmp/pitchkernel-build-step.log"
+
+          set +e
           if [ "${{ inputs.ksu }}" == "true" ]; then
-            bash ${{ inputs.script }} munch ksu
+            bash ${{ inputs.script }} munch ksu > "$LOG" 2>&1
           else
-            bash ${{ inputs.script }} munch
+            bash ${{ inputs.script }} munch > "$LOG" 2>&1
           fi
+          BUILD_EXIT=$?
+          set -e
+
+          echo "### Build step finished, exit code: $BUILD_EXIT ###"
+          echo "Full output captured to $LOG ($(wc -l < "$LOG") lines)."
+          echo "Last 60 lines:"
+          tail -60 "$LOG"
+
+          if [ "$BUILD_EXIT" -ne 0 ]; then
+            echo "::error::build.sh exited $BUILD_EXIT — see full log above/artifact."
+            exit "$BUILD_EXIT"
+          fi
+
+      - name: Upload full build log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pitchkernel-build-step-log
+          path: /tmp/pitchkernel-build-step.log
+          retention-days: 7
 
       - name: DEBUG - snapshot ReSukiSU/SUSFS generated source layout
         # PitchKernel: temporary, one-off diagnostic step. ReSukiSU's setup.sh
@@ -419,6 +433,48 @@ jobs:
           echo "Any other ERROR/FATAL/WARNING text in the log that is NOT listed above"
           echo "has not been traced and classified yet -- treat it as a real signal,"
           echo "not noise, until it has been."
+
+      - name: Check for LLVM LTO broken-pipe errors
+        run: |
+          # PitchKernel: munch_defconfig sets CONFIG_LTO_CLANG=y without
+          # CONFIG_THINLTO, so LTO codegen runs in full/monolithic mode with
+          # its own internal worker threads (Makefile ~line 895-903,
+          # KBUILD_LDFLAGS). On the 4-core ubuntu-24.04 runner this
+          # previously produced "LLVM ERROR: IO failure on output stream:
+          # Broken pipe" from lld's LTO backend, up to 463 times in a single
+          # build (run 29497655576), interleaved throughout normal CC output
+          # rather than clustered at one point. That build still linked and
+          # booted, but nothing verified none of those 463 events touched a
+          # corrupted-but-still-linkable object -- an LTO analog of the
+          # KSU_SUSFS silent-drop incident the "Verify SUSFS actually
+          # compiled in" step below already exists to catch. build.sh now
+          # caps LTO's internal thread count via `-mllvm -threads=N` to
+          # remove the resource contention that causes this. This step is
+          # the gate: if the pattern reappears, that cap did not work (or
+          # was bypassed, e.g. by a build.sh edit that stopped exporting
+          # KBUILD_LDFLAGS) and the build must not ship unverified.
+          #
+          # This intentionally hard-fails, unlike "Annotate known-benign
+          # build noise" above. That step is for patterns confirmed benign
+          # after tracing to a harmless upstream cause. This pattern is NOT
+          # in that category -- it is a known-real LLVM/lld failure mode
+          # that happened not to corrupt output on past runs. Do not move
+          # this into the benign registry; if the thread cap makes it stop
+          # appearing entirely (the expected outcome), that is this gate
+          # doing its job, not a reason to soften it.
+          LOG="/tmp/pitchkernel-build-step.log"
+          [ -f "$LOG" ] || { echo "No build-step log captured -- cannot check. Failing closed."; exit 1; }
+
+          COUNT=$(grep -c "LLVM ERROR: IO failure on output stream: Broken pipe" "$LOG" || true)
+          if [ "$COUNT" -gt 0 ]; then
+            echo "::error::Found $COUNT occurrence(s) of 'LLVM ERROR: IO failure on output stream: Broken pipe' in the build log."
+            echo "This is a known LTO/lld resource-contention failure mode (full LTO + make -j\$(nproc) double-parallelism on a 4-core runner)."
+            echo "build.sh's LTO_LINK_JOBS thread cap (KBUILD_LDFLAGS=-mllvm -threads=N) should have prevented this — check that it is still present and still exported before MAKE_ARGS is used."
+            echo "Do not classify this as benign noise without re-tracing it: a broken pipe mid-LTO-codegen has not been proven safe, only observed to not have broken past builds."
+            exit 1
+          fi
+
+          echo "No LLVM LTO broken-pipe errors found in build log. LTO thread cap is holding."
 
       - name: Verify SUSFS actually compiled in
         run: |
