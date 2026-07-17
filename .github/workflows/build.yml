@@ -128,6 +128,21 @@ jobs:
           cat /proc/cpuinfo | grep "model name" | head -1
           echo "BUILD_START_EPOCH=$(date +%s)" >> $GITHUB_ENV
           openssl speed -seconds 2 aes-256-cbc 2>&1 | tail -3
+          # PitchKernel: DIAGNOSTIC, one-line check, not a build. Testing
+          # whether this runner's make is >=4.4, which changed SIGPIPE
+          # handling for child processes (make ignores SIGPIPE for children
+          # since 4.4, so a subprocess writing to a closed pipe gets EPIPE
+          # as a normal error return instead of dying silently to the
+          # signal -- documented cause of an almost identical "broken pipe"
+          # crash in `find` during kbuild, see LKML "Kernel builds now
+          # failing" Jan 2023 thread). This does not prove make is the
+          # cause of the "LLVM ERROR: IO failure on output stream: Broken
+          # pipe" pattern (LTO, ccache, and -j parallelism are already
+          # ruled out with direct build-log evidence) -- it only checks
+          # whether this specific variable is even in play before spending
+          # another 10+ minute diagnostic build on it.
+          echo "make version:"
+          make --version | head -1
 
       - name: Setup Neutron Clang
         run: |
@@ -284,24 +299,15 @@ jobs:
           CCACHE_COMPRESSLEVEL: '6'
           CCACHE_SLOPPINESS: include_file_mtime,include_file_ctime,time_macros
           CCACHE_BASEDIR: ${{ github.workspace }}
-          # PitchKernel: DIAGNOSTIC. Previous question (was ccache the cause
-          # of "LLVM ERROR: IO failure on output stream: Broken pipe"?) is
-          # answered: no. PITCHKERNEL_NO_CCACHE=1 fully bypassed ccache in
-          # run 79958527969 and the error count went 304 -> 452, not toward
-          # 0. Also independently confirmed LTO was never enabled in any
-          # build this repo produces (build.sh explicitly disables it via
-          # scripts/config before every real make call, overriding
-          # munch_defconfig). Both prior theories are closed.
-          #
-          # This run tests the remaining suspect: make -j$(nproc) itself,
-          # i.e. whether 4 concurrent clang processes writing to one
-          # captured stdout/stderr stream is what triggers clang's hard
-          # abort on EPIPE. PITCHKERNEL_SERIAL_BUILD=1 forces -j1 (see
-          # build.sh's long comment near the JOBS variable for the full
-          # evidence trail). This run will be dramatically slower than
-          # normal -- do not leave this set for regular builds, remove once
-          # the question is answered.
-          PITCHKERNEL_SERIAL_BUILD: '1'
+          # PitchKernel: LTO, ccache, and make -j parallelism are all ruled
+          # out with direct build-log evidence as causes of "LLVM ERROR: IO
+          # failure on output stream: Broken pipe" (see build.sh's comment
+          # near the JOBS variable, and history in this file's prior
+          # revisions, for the full evidence trail). PITCHKERNEL_NO_CCACHE
+          # and PITCHKERNEL_SERIAL_BUILD flags remain available in build.sh
+          # if a future regression needs re-testing, but neither should be
+          # set for normal builds -- both make builds significantly slower
+          # for no benefit now that the question they answer is closed.
         run: |
           cd apasitu
           chmod +x build.sh build-miui.sh
