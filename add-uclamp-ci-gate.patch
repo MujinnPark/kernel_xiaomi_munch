@@ -1,0 +1,54 @@
+--- a/.github/workflows/build.yml
++++ b/.github/workflows/build.yml
+@@ -604,6 +604,51 @@
+ 
+           echo "SUSFS verification passed — real, not just labeled."
+ 
++      - name: Verify uclamp actually compiled in
++        run: |
++          # Same failure class as the SUSFS incident above, different symbol:
++          # the "Patch defconfig" step previously contained a hardcoded
++          # `scripts/config --disable UCLAMP_TASK --disable UCLAMP_TASK_GROUP`
++          # block that silently overwrote the kernel source's own defconfig
++          # settings on every single CI run, regardless of what the tree
++          # actually shipped. That block was removed, but nothing enforced
++          # that it stays removed — a future edit to this file, or a merge
++          # from a branch that still has it, would reintroduce the same
++          # silent regression. This step checks the real generated .config,
++          # not a label, not a filename, not a comment.
++          CONFIG_FILE="apasitu/out/.config"
++          [ -f "$CONFIG_FILE" ] || { echo "FATAL: $CONFIG_FILE not found — build may not have produced a config"; exit 1; }
++
++          echo "Checking $CONFIG_FILE for uclamp symbols..."
++          MISSING=0
++          for SYM in CONFIG_UCLAMP_TASK CONFIG_UCLAMP_TASK_GROUP; do
++            if grep -q "^${SYM}=y" "$CONFIG_FILE"; then
++              echo "  OK: ${SYM}=y"
++            else
++              echo "  MISSING: ${SYM} is not set to y in the generated .config"
++              MISSING=1
++            fi
++          done
++
++          if grep -q "^CONFIG_SCHED_TUNE=y" "$CONFIG_FILE"; then
++            echo "  WARNING: CONFIG_SCHED_TUNE=y is also set — this is Kconfig-mutually-exclusive"
++            echo "  with CONFIG_UCLAMP_TASK (depends on !UCLAMP_TASK). If UCLAMP_TASK=y above,"
++            echo "  Kconfig has already forced SCHED_TUNE off internally regardless of this line,"
++            echo "  so it's stale rather than actively conflicting -- but it should be removed"
++            echo "  from the defconfig source so the file stops claiming something false."
++          fi
++
++          if [ "$MISSING" -eq 1 ]; then
++            echo ""
++            echo "FATAL: uclamp is not actually compiled in. Do not let this build ship."
++            echo "Check .github/workflows/build.yml's 'Patch defconfig' step for a"
++            echo "reintroduced '--disable UCLAMP_TASK' / '--disable UCLAMP_TASK_GROUP' block,"
++            echo "and check arch/arm64/configs/munch_defconfig directly for the same."
++            exit 1
++          fi
++
++          echo "uclamp verification passed — real, not just labeled."
++
+       - name: Verify pitchkernel scripts are in the AK3 overlay
+         run: |
+           for f in pitchkernel_cpufreq.sh pitchkernel_banking_prep.sh pitchkernel_sepolicy.sh pitchkernel_v3_tuning.sh; do
