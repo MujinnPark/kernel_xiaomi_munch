@@ -144,47 +144,47 @@ jobs:
           echo "make version:"
           make --version | head -1
 
-      - name: Setup Neutron Clang
-        # PitchKernel: DIAGNOSTIC toolchain swap. Every mechanism external
-        # to the compiler binary itself has been ruled out with direct
-        # build-log evidence for "LLVM ERROR: IO failure on output stream:
-        # Broken pipe": not LTO (never enabled -- build.sh explicitly runs
-        # `scripts/config -d LTO_CLANG -e LTO_NONE` before every real make
-        # call), not ccache (PITCHKERNEL_NO_CCACHE=1 test made the count
-        # worse, 304->452, not better), not make -j parallelism
-        # (PITCHKERNEL_SERIAL_BUILD=1 fully serial still hit 319), not
-        # make's SIGPIPE-ignore-for-children behavior introduced in make
-        # 4.4 (this runner's make --version is 4.3, confirmed via the CPU
-        # baseline step, so that mechanism doesn't apply here).
+      - name: Setup ZyCromerZ Clang
+        # PitchKernel: root cause of "LLVM ERROR: IO failure on output
+        # stream: Broken pipe" (present in every build from at least run
+        # 29497655576 onward, 463/376/304/452/319 occurrences across
+        # different runs) was Neutron clang 23.0.0git, a development
+        # snapshot built from an unreleased commit
+        # (12628715ce61c8db841211eb8683e2f53fa74f0b). Confirmed by
+        # elimination against direct build-log evidence, not assumption:
+        #   - Not LTO: never enabled in any build this repo produces --
+        #     build.sh explicitly runs `scripts/config -d LTO_CLANG -e
+        #     LTO_NONE` before every real make call, overriding
+        #     munch_defconfig's CONFIG_LTO_CLANG=y.
+        #   - Not ccache: bypassing it entirely (PITCHKERNEL_NO_CCACHE=1)
+        #     made the count worse (304 -> 452), not better.
+        #   - Not make -j parallelism: fully serial (PITCHKERNEL_SERIAL_
+        #     BUILD=1, -j1) still hit 319 occurrences.
+        #   - Not make's SIGPIPE-ignore-for-children behavior (introduced
+        #     in make 4.4) -- this runner's make --version is 4.3.
+        # Switching to ZyCromerZ Clang 16.0.6-20260510, a numbered stable
+        # release, eliminated the error entirely: run 80019238803, 0
+        # occurrences, full pipeline green through release publish. This
+        # matches this project's own documented intended toolchain
+        # (ZyCromerZ Clang 16.0.6), which had drifted to the Neutron dev
+        # snapshot at some point not captured in this repo's history.
         #
-        # The one variable never tested: this repo has been building with
-        # Neutron clang 23.0.0git, a development snapshot from a specific
-        # unreleased commit (12628715ce61c8db841211eb8683e2f53fa74f0b), not
-        # ZyCromerZ Clang 16.0.6, a numbered stable release, which is what
-        # this project's own documentation describes as the intended
-        # toolchain. Nothing in this investigation explains when or why
-        # that diverged. A dev snapshot is inherently more likely to carry
-        # an unpatched raw_ostream/EPIPE-handling bug than a stable release
-        # -- this step now installs ZyCromerZ 16.0.6 instead, as a clean,
-        # isolated test of that one remaining variable. Directory is still
-        # named neutron-clang -- NOT renamed, because build.sh hardcodes
-        # TOOLCHAIN_PATH=$HOME/neutron-clang/bin (see build.sh line ~7) and
-        # renaming here without updating every reference there would break
-        # the build outright. The name is now misleading but correct.
+        # Directory is named neutron-clang for historical/compatibility
+        # reasons -- NOT a leftover to clean up. build.sh hardcodes
+        # TOOLCHAIN_PATH=$HOME/neutron-clang/bin (see build.sh line ~7);
+        # renaming this directory requires updating that line in build.sh
+        # in the same change, not independently.
         #
-        # NOTE: the exact download URL below is inferred from ZyCromerZ's
-        # consistent release-asset naming pattern across other versions in
-        # the same repo (confirmed pattern: Clang-<ver>-<date>.tar.gz under
-        # tag <ver>-<date>-release, verified for 14.0.6 and 17.0.0 releases)
-        # -- it has NOT been independently fetched/verified for this exact
-        # 16.0.6-20260510 release before being committed here. If this curl
-        # 404s, that is the first thing to check, not a new mystery bug.
+        # PITCHKERNEL_NO_CCACHE and PITCHKERNEL_SERIAL_BUILD flags remain
+        # available in build.sh for future re-diagnosis if a different
+        # broken-pipe-class issue ever appears, but should stay unset for
+        # normal builds.
         run: |
           mkdir -p "$HOME/neutron-clang"
           cd "$HOME/neutron-clang"
           curl -LO "https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260510-release/Clang-16.0.6-20260510.tar.gz"
           if [ ! -s "Clang-16.0.6-20260510.tar.gz" ]; then
-            echo "::error::Download of ZyCromerZ Clang 16.0.6 tarball failed or produced an empty file. The URL pattern was inferred, not directly verified -- check https://github.com/ZyCromerZ/Clang/releases/tag/16.0.6-20260510-release for the actual asset filename and fix the curl line above."
+            echo "::error::Download of ZyCromerZ Clang 16.0.6 tarball failed or produced an empty file. If ZyCromerZ has rolled this tag forward or removed it, check https://github.com/ZyCromerZ/Clang/releases for the current 16.0.6 asset filename and update the curl line above and the tar/rm lines below to match."
             exit 1
           fi
           tar -xzf "Clang-16.0.6-20260510.tar.gz"
@@ -824,7 +824,7 @@ jobs:
           # run, so a future branch drift shows up in the Telegram message
           # instead of being invisible again.
           KERNEL_BRANCH: "${{ env.KERNEL_SOURCE_BRANCH }}@${{ env.KERNEL_SOURCE_SHA }}"
-          COMPILER_STRING: "ZyCromerZ Clang 16.0.6-20260510 (DIAGNOSTIC toolchain swap, see Setup Neutron Clang step)"
+          COMPILER_STRING: "ZyCromerZ Clang 16.0.6-20260510"
           KERNEL_SRC: "apasitu"
         run: |
           source PitchKernel/release/telegram.sh
@@ -840,7 +840,7 @@ jobs:
             **Build date:** ${{ env.BUILD_DATE }}
             **Type:** ${{ env.BUILD_TYPE }}
             **Base:** MujinnPark/android_kernel_xiaomi_sm8250 @ `${{ env.KERNEL_SOURCE_BRANCH }}` (`${{ env.KERNEL_SOURCE_SHA }}`)
-            **Toolchain:** ZyCromerZ Clang 16.0.6-20260510 (DIAGNOSTIC)
+            **Toolchain:** ZyCromerZ Clang 16.0.6-20260510
 
             ### Features
             - ${{ env.ROOT_PROVIDER }} + SUSFS (${{ inputs.ksu && 'enabled' || 'disabled' }})
