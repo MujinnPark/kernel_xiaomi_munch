@@ -114,86 +114,27 @@ jobs:
           echo "KERNEL_SOURCE_SHA=${RESOLVED_SHA}" >> $GITHUB_ENV
           echo "Resolved to commit: ${RESOLVED_SHA}"
 
-      - name: Apply bypass charging patch
+- name: Apply bypass charging patch
         run: |
           echo "Applying bypass charging patch to apasitu (branch=${KERNEL_SOURCE_BRANCH}, sha=${KERNEL_SOURCE_SHA})"
           cd apasitu
           git apply --check ../PitchKernel/patches/bypass_charging_munch.patch
           git apply ../PitchKernel/patches/bypass_charging_munch.patch
-          echo "Patch applied cleanly."
-
-      - name: CPU baseline benchmark
+          echo "Patch applied cleanly."      -
+ name: CPU baseline benchmark
         run: |
           echo "nproc: $(nproc)"
           cat /proc/cpuinfo | grep "model name" | head -1
           echo "BUILD_START_EPOCH=$(date +%s)" >> $GITHUB_ENV
           openssl speed -seconds 2 aes-256-cbc 2>&1 | tail -3
-          # PitchKernel: DIAGNOSTIC, one-line check, not a build. Testing
-          # whether this runner's make is >=4.4, which changed SIGPIPE
-          # handling for child processes (make ignores SIGPIPE for children
-          # since 4.4, so a subprocess writing to a closed pipe gets EPIPE
-          # as a normal error return instead of dying silently to the
-          # signal -- documented cause of an almost identical "broken pipe"
-          # crash in `find` during kbuild, see LKML "Kernel builds now
-          # failing" Jan 2023 thread). This does not prove make is the
-          # cause of the "LLVM ERROR: IO failure on output stream: Broken
-          # pipe" pattern (LTO, ccache, and -j parallelism are already
-          # ruled out with direct build-log evidence) -- it only checks
-          # whether this specific variable is even in play before spending
-          # another 10+ minute diagnostic build on it.
-          echo "make version:"
-          make --version | head -1
 
-      - name: Setup ZyCromerZ Clang
-        # PitchKernel: root cause of "LLVM ERROR: IO failure on output
-        # stream: Broken pipe" (present in every build from at least run
-        # 29497655576 onward, 463/376/304/452/319 occurrences across
-        # different runs) was Neutron clang 23.0.0git, a development
-        # snapshot built from an unreleased commit
-        # (12628715ce61c8db841211eb8683e2f53fa74f0b). Confirmed by
-        # elimination against direct build-log evidence, not assumption:
-        #   - Not LTO: never enabled in any build this repo produces --
-        #     build.sh explicitly runs `scripts/config -d LTO_CLANG -e
-        #     LTO_NONE` before every real make call, overriding
-        #     munch_defconfig's CONFIG_LTO_CLANG=y.
-        #   - Not ccache: bypassing it entirely (PITCHKERNEL_NO_CCACHE=1)
-        #     made the count worse (304 -> 452), not better.
-        #   - Not make -j parallelism: fully serial (PITCHKERNEL_SERIAL_
-        #     BUILD=1, -j1) still hit 319 occurrences.
-        #   - Not make's SIGPIPE-ignore-for-children behavior (introduced
-        #     in make 4.4) -- this runner's make --version is 4.3.
-        # Switching to ZyCromerZ Clang 16.0.6-20260510, a numbered stable
-        # release, eliminated the error entirely: run 80019238803, 0
-        # occurrences, full pipeline green through release publish. This
-        # matches this project's own documented intended toolchain
-        # (ZyCromerZ Clang 16.0.6), which had drifted to the Neutron dev
-        # snapshot at some point not captured in this repo's history.
-        #
-        # Directory is named neutron-clang for historical/compatibility
-        # reasons -- NOT a leftover to clean up. build.sh hardcodes
-        # TOOLCHAIN_PATH=$HOME/neutron-clang/bin (see build.sh line ~7);
-        # renaming this directory requires updating that line in build.sh
-        # in the same change, not independently.
-        #
-        # PITCHKERNEL_NO_CCACHE and PITCHKERNEL_SERIAL_BUILD flags remain
-        # available in build.sh for future re-diagnosis if a different
-        # broken-pipe-class issue ever appears, but should stay unset for
-        # normal builds.
+      - name: Setup Neutron Clang
         run: |
           mkdir -p "$HOME/neutron-clang"
           cd "$HOME/neutron-clang"
-          curl -LO "https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260510-release/Clang-16.0.6-20260510.tar.gz"
-          if [ ! -s "Clang-16.0.6-20260510.tar.gz" ]; then
-            echo "::error::Download of ZyCromerZ Clang 16.0.6 tarball failed or produced an empty file. If ZyCromerZ has rolled this tag forward or removed it, check https://github.com/ZyCromerZ/Clang/releases for the current 16.0.6 asset filename and update the curl line above and the tar/rm lines below to match."
-            exit 1
-          fi
-          tar -xzf "Clang-16.0.6-20260510.tar.gz"
-          rm -f "Clang-16.0.6-20260510.tar.gz"
-          if [ ! -x "$HOME/neutron-clang/bin/clang" ]; then
-            echo "::error::Extracted archive does not contain bin/clang at the expected path. The archive's internal directory structure may differ from what was assumed -- inspect it manually."
-            ls -la "$HOME/neutron-clang"
-            exit 1
-          fi
+          curl -LO "https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman"
+          chmod +x antman
+          ./antman -S=30062026
 
       - name: Verify ATFWD-daemon not excluded from sucompat
         run: |
@@ -224,6 +165,12 @@ jobs:
           cd apasitu
           ./scripts/config --file arch/arm64/configs/munch_defconfig \
             --disable LOCALVERSION_AUTO
+          cd ..
+
+          cd apasitu
+          ./scripts/config --file arch/arm64/configs/munch_defconfig \
+            --disable UCLAMP_TASK \
+            --disable UCLAMP_TASK_GROUP
           cd ..
 
           {
@@ -301,30 +248,19 @@ jobs:
             ccache-munch-${{ runner.os }}-neutronclang23-30062026-
 
       - name: Build kernel
-        # PitchKernel: log capture redesigned after a measured regression.
-        # Original design piped 8000+ build-output lines through BOTH
-        # `2> >(grep -v ...)` (process substitution) AND `tee` (live disk
-        # write + live stream duplication) simultaneously. A controlled test
-        # (tee/filter removed, 3 consecutive identical-SHA builds) showed
-        # per-compile-call time went 325-355ms -> 105ms with the same 8014
-        # call count -- a real 3x regression caused by that combination, not
-        # imagined. Root cause: synchronous per-line overhead from two
-        # concurrent consumers of a live stdout/stderr stream during the
-        # hottest part of the build.
-        #
-        # Fix: capture to file with a single buffered redirect
-        # (`> "$LOG" 2>&1`), no tee, no process substitution, no live
-        # duplication to the GHA console during compilation. This does mean
-        # per-line output will not appear in the live Actions log in real
-        # time -- it is written straight to file and only the final summary
-        # echoes below are visible live. The full log is still available to
-        # every subsequent step via $LOG (the "Annotate known-benign build
-        # noise" and "Check for unclassified build errors" steps both read
-        # it), and is uploaded as an artifact on failure so nothing is lost,
-        # it just is not streamed live. This is the tradeoff that avoids the
-        # measured 3x regression: if live streaming during compilation is
-        # ever required again, it needs a different mechanism than tee+grep
-        # on every line (e.g. periodic `tail -f` sampling), not this.
+        # TEMPORARY TEST (see PitchKernel note below) - tee/process-substitution
+        # and explicit pipefail shell removed to isolate a confirmed 3x
+        # per-compile-call slowdown (105ms/call -> 325-355ms/call, same 8014
+        # call count, 3 consecutive identical-SHA builds) that started exactly
+        # when tee was added for the noise-annotation feature. Hypothesis:
+        # piping every one of 8000+ build output lines through a process-
+        # substitution grep filter AND tee (disk write) adds real per-line
+        # overhead during compilation itself, not just after. If this build
+        # returns to ~13-17min / ~105ms per call, the hypothesis is confirmed
+        # and tee needs to be redesigned (e.g. redirect to file only, without
+        # also duplicating to the live log stream) rather than reverted outright,
+        # since the pipefail fix (actions/runner#1955) is still needed for
+        # correctness once tee comes back.
         env:
           KBUILD_BUILD_TIMESTAMP: ''
           KBUILD_BUILD_USER: pitchkernel
@@ -336,37 +272,33 @@ jobs:
           CCACHE_COMPRESSLEVEL: '6'
           CCACHE_SLOPPINESS: include_file_mtime,include_file_ctime,time_macros
           CCACHE_BASEDIR: ${{ github.workspace }}
-          # PitchKernel: LTO, ccache, and make -j parallelism are all ruled
-          # out with direct build-log evidence as causes of "LLVM ERROR: IO
-          # failure on output stream: Broken pipe" (see build.sh's comment
-          # near the JOBS variable, and history in this file's prior
-          # revisions, for the full evidence trail). PITCHKERNEL_NO_CCACHE
-          # and PITCHKERNEL_SERIAL_BUILD flags remain available in build.sh
-          # if a future regression needs re-testing, but neither should be
-          # set for normal builds -- both make builds significantly slower
-          # for no benefit now that the question they answer is closed.
         run: |
           cd apasitu
           chmod +x build.sh build-miui.sh
-          LOG="/tmp/pitchkernel-build-step.log"
-
-          set +e
+          # PitchKernel: ReSukiSU's setup.sh (pulled fresh from upstream inside
+          # build.sh) runs a GKI-oriented compat probe that greps for
+          # include/linux/seccomp_types.h. That header was introduced upstream
+          # in Linux 5.x+ (split out of seccomp.h) and does not exist on this
+          # 4.19.325 non-GKI tree, so the grep fails harmlessly and ReSukiSU
+          # just skips that compat shim. The grep runs from a process nested
+          # inside setup.sh's own build/config step, so filtering stderr
+          # inside build.sh via `2> >(...)` does not reliably catch it -
+          # nested subprocesses can reopen fd 2 in ways that bypass the
+          # parent's process substitution. Filtering the whole step's output
+          # here is reliable regardless of nesting depth. Only this exact
+          # known-benign line is stripped; any other ReSukiSU/setup output,
+          # including real new failures, still passes through untouched.
+          #
+          # TEMPORARILY REMOVED FOR THIS TEST: the `2> >(grep -v ...)` filter
+          # and `| tee /tmp/pitchkernel-build-step.log`. This means the
+          # seccomp_types.h noise and the noise-annotation step's input file
+          # will not be present in THIS build's log -- expected and fine for
+          # a one-off timing test. Do not leave the pipeline in this state;
+          # both need to come back once the slowdown mechanism is confirmed.
           if [ "${{ inputs.ksu }}" == "true" ]; then
-            bash ${{ inputs.script }} munch ksu > "$LOG" 2>&1
+            bash ${{ inputs.script }} munch ksu
           else
-            bash ${{ inputs.script }} munch > "$LOG" 2>&1
-          fi
-          BUILD_EXIT=$?
-          set -e
-
-          echo "### Build step finished, exit code: $BUILD_EXIT ###"
-          echo "Full output captured to $LOG ($(wc -l < "$LOG") lines)."
-          echo "Last 60 lines:"
-          tail -60 "$LOG"
-
-          if [ "$BUILD_EXIT" -ne 0 ]; then
-            echo "::error::build.sh exited $BUILD_EXIT — see full log above/artifact."
-            exit "$BUILD_EXIT"
+            bash ${{ inputs.script }} munch
           fi
 
       - name: DEBUG - snapshot ReSukiSU/SUSFS generated source layout
@@ -486,69 +418,6 @@ jobs:
           echo "Any other ERROR/FATAL/WARNING text in the log that is NOT listed above"
           echo "has not been traced and classified yet -- treat it as a real signal,"
           echo "not noise, until it has been."
-
-      - name: Check for LLVM LTO broken-pipe errors
-        run: |
-          # PitchKernel: munch_defconfig sets CONFIG_LTO_CLANG=y without
-          # CONFIG_THINLTO, so LTO codegen runs in full/monolithic mode with
-          # its own internal worker threads (Makefile ~line 895-903,
-          # KBUILD_LDFLAGS). On the 4-core ubuntu-24.04 runner this
-          # previously produced "LLVM ERROR: IO failure on output stream:
-          # Broken pipe" from lld's LTO backend, up to 463 times in a single
-          # build (run 29497655576), interleaved throughout normal CC output
-          # rather than clustered at one point. That build still linked and
-          # booted, but nothing verified none of those 463 events touched a
-          # corrupted-but-still-linkable object -- an LTO analog of the
-          # KSU_SUSFS silent-drop incident the "Verify SUSFS actually
-          # compiled in" step below already exists to catch. build.sh now
-          # caps LTO's internal thread count via `-mllvm -threads=N` to
-          # remove the resource contention that causes this. This step is
-          # the gate: if the pattern reappears, that cap did not work (or
-          # was bypassed, e.g. by a build.sh edit that stopped exporting
-          # KBUILD_LDFLAGS) and the build must not ship unverified.
-          #
-          # This intentionally hard-fails, unlike "Annotate known-benign
-          # build noise" above. That step is for patterns confirmed benign
-          # after tracing to a harmless upstream cause. This pattern is NOT
-          # in that category -- it is a known-real LLVM/lld failure mode
-          # that happened not to corrupt output on past runs. Do not move
-          # this into the benign registry; if the thread cap makes it stop
-          # appearing entirely (the expected outcome), that is this gate
-          # doing its job, not a reason to soften it.
-          LOG="/tmp/pitchkernel-build-step.log"
-          [ -f "$LOG" ] || { echo "No build-step log captured -- cannot check. Failing closed."; exit 1; }
-
-          COUNT=$(grep -c "LLVM ERROR: IO failure on output stream: Broken pipe" "$LOG" || true)
-          if [ "$COUNT" -gt 0 ]; then
-            echo "::error::Found $COUNT occurrence(s) of 'LLVM ERROR: IO failure on output stream: Broken pipe' in the build log."
-            echo "This is a known LTO/lld resource-contention failure mode (full LTO + make -j\$(nproc) double-parallelism on a 4-core runner)."
-            echo "build.sh's LTO_LINK_JOBS thread cap (KBUILD_LDFLAGS=-mllvm -threads=N) should have prevented this — check that it is still present and still exported before MAKE_ARGS is used."
-            echo "Do not classify this as benign noise without re-tracing it: a broken pipe mid-LTO-codegen has not been proven safe, only observed to not have broken past builds."
-            exit 1
-          fi
-
-          echo "No LLVM LTO broken-pipe errors found in build log. LTO thread cap is holding."
-
-      - name: Upload full build log on failure
-        # PitchKernel: originally placed right after "Build kernel" -- wrong.
-        # if: failure() only evaluates true once some step earlier in the job
-        # has already failed. build.sh itself can exit 0 (compile+package
-        # succeeds) while a later gate step (e.g. the broken-pipe check above)
-        # is what actually fails the job -- confirmed in run 79949305509,
-        # where build.sh produced a flashable zip successfully and this step,
-        # in its old position, never ran because nothing had failed yet at
-        # that point in sequence. Moved here, after every step that can
-        # currently fail the job (LTO gate, and SUSFS-compiled-in gate below
-        # would also need this if it can fail before packaging -- verify if
-        # that step is ever moved earlier than this one). If more hard-fail
-        # gates are added later in the job, keep this upload step positioned
-        # after all of them, not just the LTO one.
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: pitchkernel-build-step-log
-          path: /tmp/pitchkernel-build-step.log
-          retention-days: 7
 
       - name: Verify SUSFS actually compiled in
         run: |
@@ -818,7 +687,7 @@ jobs:
           # run, so a future branch drift shows up in the Telegram message
           # instead of being invisible again.
           KERNEL_BRANCH: "${{ env.KERNEL_SOURCE_BRANCH }}@${{ env.KERNEL_SOURCE_SHA }}"
-          COMPILER_STRING: "ZyCromerZ Clang 16.0.6-20260510"
+          COMPILER_STRING: "Neutron Clang 30062026"
           KERNEL_SRC: "apasitu"
         run: |
           source PitchKernel/release/telegram.sh
@@ -834,7 +703,7 @@ jobs:
             **Build date:** ${{ env.BUILD_DATE }}
             **Type:** ${{ env.BUILD_TYPE }}
             **Base:** MujinnPark/android_kernel_xiaomi_sm8250 @ `${{ env.KERNEL_SOURCE_BRANCH }}` (`${{ env.KERNEL_SOURCE_SHA }}`)
-            **Toolchain:** ZyCromerZ Clang 16.0.6-20260510
+            **Toolchain:** Neutron Clang 30062026
 
             ### Features
             - ${{ env.ROOT_PROVIDER }} + SUSFS (${{ inputs.ksu && 'enabled' || 'disabled' }})

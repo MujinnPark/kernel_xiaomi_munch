@@ -1,0 +1,15 @@
+--- a/.github/workflows/build.yml
++++ b/.github/workflows/build.yml
+@@ -226,12 +226,6 @@
+             --disable LOCALVERSION_AUTO
+           cd ..
+ 
+-          cd apasitu
+-          ./scripts/config --file arch/arm64/configs/munch_defconfig \
+-            --disable UCLAMP_TASK \
+-            --disable UCLAMP_TASK_GROUP
+-          cd ..
+-
+           {
+             echo ""
+             echo "# TCP congestion control - PitchKernel"
