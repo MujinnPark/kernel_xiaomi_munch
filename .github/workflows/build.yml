@@ -451,6 +451,37 @@ jobs:
             echo "$VMLINUX not found -- cannot check post-link state"
           fi
 
+          echo ""
+          echo "--- raw byte search of the actual MIUI Image that gets zipped (post-KPM-patch if KSU enabled) ---"
+          # Confirmed from arch/arm64/boot/Makefile: Image = objcopy -O binary
+          # from vmlinux (strips ELF wrapper/symbols, keeps raw code+data
+          # bytes verbatim) -- NOT gzip (that's the separate Image.gz target,
+          # unused here). So the byte pattern should survive intact unless
+          # something (the KPM patcher, or packaging) actually rewrites this
+          # region, making this a meaningful check, not just weak signal.
+          # Caveat: an 8-byte raw match is strong but not absolute proof --
+          # unlike the symbol-table-anchored walt.o/vmlinux checks above,
+          # this can't rule out coincidental collision elsewhere in the
+          # binary. Treat a "FOUND patched" result as good evidence, not
+          # certainty; if it disagrees with the symbol-based checks, trust
+          # those instead and investigate why this one differs.
+          IMG="anykernel/kernels/miui/Image"
+          if [ -f "$IMG" ]; then
+            echo "$IMG exists, size: $(stat -c%s "$IMG") bytes, mtime: $(stat -c%y "$IMG")"
+            PATCHED_HEX="3604000020040000"
+            STOCK_HEX="3604000036040000"
+            if od -An -tx1 -v "$IMG" | tr -d ' \n' | grep -qo "$PATCHED_HEX"; then
+              echo "FOUND patched pattern (1078,1056) in $IMG -- survived KPM patch + packaging"
+            elif od -An -tx1 -v "$IMG" | tr -d ' \n' | grep -qo "$STOCK_HEX"; then
+              echo "FOUND STOCK pattern (1078,1078) in $IMG -- something between vmlinux and this Image reverted it"
+            else
+              echo "NEITHER pattern found as a raw byte match -- Image format (compression/packing) likely obscures it; inconclusive, not evidence either way"
+            fi
+          else
+            echo "$IMG not found -- checked path may be wrong, listing anykernel/kernels/:"
+            find anykernel/kernels -type f 2>/dev/null
+          fi
+
       - name: DEBUG - snapshot ReSukiSU/SUSFS generated source layout
         # PitchKernel: temporary, one-off diagnostic step. ReSukiSU's setup.sh
         # (fetched fresh from upstream in the "Build kernel" step above) writes
