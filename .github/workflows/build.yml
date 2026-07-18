@@ -394,13 +394,14 @@ jobs:
           fi
 
       - name: Verify walt.o actual compiled bytes for margin_up
-        # PitchKernel: diagnostic added 2026-07-18. Source content at clone
-        # time was already confirmed correct (see "Clone apasitu kernel
-        # source" step's grep output), and a skip_ccache=true full rebuild
-        # still produced a boot-time sysctl readback of stock values, not
-        # the patched ones -- so this checks the actual compiled object
-        # directly, closing the gap between "source is right" and "runtime
-        # behavior is wrong" instead of inferring one from the other.
+        # PitchKernel: diagnostic added 2026-07-18, fixed same day. First
+        # version of this step assumed sysctl_sched_capacity_margin_up sits
+        # at the very start of .data (true on a tiny isolated test object,
+        # false on a real walt.o with dozens of other statics ahead of it --
+        # real offset was 0x174) and reported (0,0), a false negative from
+        # the diagnostic itself, not a real finding about the kernel. Now
+        # calls scripts/pitchkernel_extract_margin.py, which reads the
+        # symbol table for the real offset first instead of assuming 0x0.
         run: |
           cd apasitu
           OBJ="out/kernel/sched/walt.o"
@@ -417,12 +418,9 @@ jobs:
           echo "--- symbol table entry for sysctl_sched_capacity_margin_up ---"
           "$OBJDUMP" -t "$OBJ" | grep margin_up || echo "SYMBOL NOT FOUND in $OBJ"
 
-          echo "--- raw .data bytes at that symbol (first 16 bytes of .data section) ---"
-          "$OBJDUMP" -s -j .data "$OBJ" | head -6
-
-          echo "--- decoded as little-endian u32 pairs (expect 1078,1056 if patch compiled; 1078,1078 if stock) ---"
-          HEXBYTES=$("$OBJDUMP" -s -j .data "$OBJ" | awk '/^ 0000/{print $2 $3; exit}')
-          python3 -c "import struct,sys; b=bytes.fromhex(sys.argv[1]); print('margin_up[0], margin_up[1] =', struct.unpack('<II', b[:8]))" "$HEXBYTES"
+          echo "--- extracting actual compiled value at the real symbol offset ---"
+          python3 "$GITHUB_WORKSPACE/scripts/pitchkernel_extract_margin.py" \
+            "$OBJDUMP" "$OBJ" sysctl_sched_capacity_margin_up
 
       - name: DEBUG - snapshot ReSukiSU/SUSFS generated source layout
         # PitchKernel: temporary, one-off diagnostic step. ReSukiSU's setup.sh
