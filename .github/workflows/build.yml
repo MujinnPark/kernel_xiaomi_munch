@@ -216,10 +216,66 @@ jobs:
           echo "-pitchkernel" > apasitu/localversion-st
           echo "" > apasitu/localversion-cip
 
-      - name: Point AnyKernel3 to PitchKernel fork
+      - name: Neutralize apasitu's AnyKernel3 clone (use vendored copy instead)
+        # PitchKernel: this step used to rewrite build.sh/build-miui.sh's
+        # AstideLabs/AnyKernel3 clone URL to point at MujinnPark/AnyKernel3 --
+        # a fork under this account. That fork was deleted, and this step kept
+        # rewriting to a dead URL, which is what actually broke CI: build.sh's
+        # `git clone` step (not this sed, which succeeds regardless of whether
+        # the target URL is alive) then failed with a 404.
+        #
+        # Root cause was never "still cloning the deleted fork by accident" --
+        # this step deliberately did that every run. The fix removes the
+        # runtime clone dependency entirely instead of re-pointing it at yet
+        # another external URL that can go away again. AnyKernel3 (AstideLabs
+        # base + PitchKernel overlay) is now vendored at
+        # PitchKernel/anykernel-vendor/ in THIS repo -- see "Verify vendored
+        # AnyKernel3 overlay is intact" step below, which checks it survived
+        # build.sh's execution correctly.
+        #
+        # IMPORTANT (found and fixed by an actual dry-run, not assumed): build.sh
+        # also runs an unconditional `rm -rf anykernel/` immediately BEFORE its
+        # (now neutralized) clone line -- this existed to clear a stale dir ahead
+        # of the fresh clone that used to repopulate it. With the clone gone,
+        # that same `rm -rf` would silently delete the seeded vendored copy below
+        # and leave anykernel/ empty for the rest of build.sh's run. That line is
+        # therefore also removed here, not just the clone -- removing only the
+        # clone and leaving this rm in place was tried first and confirmed broken
+        # in a dry run before this version was written.
         run: |
-          sed -i 's#https://github.com/AstideLabs/AnyKernel3#https://github.com/MujinnPark/AnyKernel3#' \
+          sed -i 's@git clone https://github.com/AstideLabs/AnyKernel3 -b master --single-branch --depth=1 anykernel@true  # PitchKernel: clone disabled, vendored copy seeded in CI workflow before build.sh runs@' \
             apasitu/build.sh apasitu/build-miui.sh
+          sed -i '/^rm -rf anykernel\/$/d' apasitu/build.sh apasitu/build-miui.sh
+
+          echo "Confirming no live git clone of any AnyKernel3 remains in build.sh/build-miui.sh:"
+          if grep -n "git clone.*AnyKernel3" apasitu/build.sh apasitu/build-miui.sh; then
+            echo "::error::A live AnyKernel3 clone is still present after neutralization -- sed pattern did not match, fix the pattern above."
+            exit 1
+          fi
+          echo "OK: no remaining AnyKernel3 clone in either script."
+
+          echo "Confirming the top-level 'rm -rf anykernel/' cleanup was also removed:"
+          if grep -n "^rm -rf anykernel/$" apasitu/build.sh apasitu/build-miui.sh; then
+            echo "::error::rm -rf anykernel/ still present -- it will delete the seeded vendored copy below before build.sh finishes. Fix the sed pattern above."
+            exit 1
+          fi
+          echo "OK: no destructive top-level anykernel/ wipe remains (rm -rf anykernel/kernels/ later in both scripts is untouched and still runs normally)."
+
+          # CRITICAL ORDERING: build.sh's own `cd anykernel; zip ...` packaging
+          # runs DURING build.sh, before this workflow's later "Package zip" step
+          # ever executes. apasitu/anykernel/ must already be populated *now*, or
+          # build.sh's internal packaging breaks before this workflow gets
+          # anywhere near it. This is not the same check as "Verify vendored
+          # AnyKernel3 overlay is intact" further down -- that step re-verifies
+          # after build.sh has run (build.sh's only remaining anykernel-related
+          # cleanup, `rm -rf anykernel/kernels/`, only clears the kernels/
+          # subdir, so everything else placed here survives untouched).
+          echo "Seeding apasitu/anykernel from vendored PitchKernel/anykernel-vendor..."
+          rm -rf apasitu/anykernel
+          cp -r PitchKernel/anykernel-vendor apasitu/anykernel
+          [ -f apasitu/anykernel/tools/ak3-core.sh ] || { echo "::error::vendored ak3-core.sh missing after seed copy"; exit 1; }
+          [ -f apasitu/anykernel/anykernel.sh ] || { echo "::error::vendored anykernel.sh missing after seed copy"; exit 1; }
+          echo "OK: apasitu/anykernel seeded from vendored tree ($(find apasitu/anykernel -type f | wc -l) files)."
 
       - name: Patch defconfig
         run: |
@@ -765,7 +821,7 @@ jobs:
       - name: Verify pitchkernel scripts are in the AK3 overlay
         run: |
           for f in pitchkernel_cpufreq.sh pitchkernel_banking_prep.sh pitchkernel_sepolicy.sh pitchkernel_v3_tuning.sh; do
-            TARGET="PitchKernel/anykernel/patch/$f"
+            TARGET="PitchKernel/anykernel-vendor/patch/$f"
             if [ ! -f "$TARGET" ]; then
               echo "FATAL: $TARGET missing from repo — will not be installed to post-fs-data.d"
               exit 1
@@ -789,59 +845,56 @@ jobs:
           echo "ak3-core.sh: $LINES lines"
           if [ "$LINES" -lt 900 ]; then
             echo "FATAL: ak3-core.sh is truncated at $LINES lines."
-            echo "The MujinnPark/AnyKernel3 fork has a broken tools/ak3-core.sh."
-            echo "Fix the fork (push upstream file), do NOT add a curl workaround here."
+            echo "This file comes from PitchKernel/anykernel-vendor/tools/ak3-core.sh,"
+            echo "vendored directly in this repo (kernel_xiaomi_munch) -- there is no"
+            echo "external fork or clone in the loop anymore. Fix it in place:"
             echo ""
-            echo "Quick fix:"
-            echo "  git clone https://github.com/MujinnPark/AnyKernel3.git"
-            echo "  cd AnyKernel3"
-            echo "  curl -fsSL https://raw.githubusercontent.com/osm0sis/AnyKernel3/master/tools/ak3-core.sh -o tools/ak3-core.sh"
-            echo "  git add tools/ak3-core.sh && git commit -m 'fix: restore complete ak3-core.sh' && git push"
+            echo "  cd kernel_xiaomi_munch"
+            echo "  curl -fsSL https://raw.githubusercontent.com/osm0sis/AnyKernel3/master/tools/ak3-core.sh \\"
+            echo "    -o PitchKernel/anykernel-vendor/tools/ak3-core.sh"
+            echo "  git add PitchKernel/anykernel-vendor/tools/ak3-core.sh"
+            echo "  git commit -m 'fix: restore complete ak3-core.sh in vendored AnyKernel3'"
+            echo "  git push"
             exit 1
           fi
           bash -n "$TARGET" || { echo "FATAL: ak3-core.sh has a syntax error"; exit 1; }
           echo "ak3-core.sh OK ($LINES lines, passes bash -n)"
 
-      - name: Overlay PitchKernel AnyKernel3 files
+      - name: Verify vendored AnyKernel3 overlay is intact
+        # PitchKernel: previously "Overlay PitchKernel AnyKernel3 files" -- it
+        # used to actively COPY PitchKernel/anykernel/* on top of apasitu/anykernel
+        # (which used to be a fresh clone of MujinnPark/AnyKernel3, now deleted).
+        #
+        # That copy step is gone. PitchKernel/anykernel-vendor/ in THIS repo is
+        # now the single source of truth for the whole AnyKernel3 tree (AstideLabs
+        # base + PitchKernel overlay merged together, committed directly), and it
+        # was already seeded into apasitu/anykernel by the "Neutralize apasitu's
+        # AnyKernel3 clone" step BEFORE build.sh ran -- build.sh's own
+        # `rm -rf anykernel/kernels/` only clears the kernels/ subdir, so
+        # everything else placed there before the build survives untouched.
+        #
+        # This step no longer overlays anything -- it just verifies that survived
+        # correctly, so a bug in build.sh's internal handling of anykernel/ (or a
+        # future change to it) doesn't ship a build with a stock, un-customized
+        # AnyKernel3 silently substituted in.
         run: |
           AK3_BUILT="apasitu/anykernel"
-          AK3_OURS="PitchKernel/anykernel"
-          [ -d "$AK3_BUILT" ] || { echo "ERROR: $AK3_BUILT not found — build failed"; exit 1; }
-          [ -d "$AK3_OURS"  ] || { echo "ERROR: $AK3_OURS not found — missing from repo"; exit 1; }
+          [ -d "$AK3_BUILT" ] || { echo "ERROR: $AK3_BUILT not found — build failed or wiped it"; exit 1; }
 
-          echo "Overlaying PitchKernel anykernel files over cloned MujinnPark/AnyKernel3..."
-          cp -v "$AK3_OURS/anykernel.sh" "$AK3_BUILT/anykernel.sh"
-          mkdir -p "$AK3_BUILT/patch"
-          cp -v "$AK3_OURS/patch/pitchkernel_cpufreq.sh" "$AK3_BUILT/patch/pitchkernel_cpufreq.sh"
-          cp -v "$AK3_OURS/patch/pitchkernel_banking_prep.sh" "$AK3_BUILT/patch/pitchkernel_banking_prep.sh"
-          cp -v "$AK3_OURS/patch/pitchkernel_sepolicy.sh" "$AK3_BUILT/patch/pitchkernel_sepolicy.sh"
-          # PitchKernel: v2 scheduler/GPU tuning, added after the original
-          # three files above. This list is hardcoded, not a directory copy,
-          # so anykernel.sh's own install step (which does `cp
-          # $AKHOME/patch/pitchkernel_v2_tuning.sh ...`) silently found nothing
-          # to copy in flashed zips built before this line existed -- confirmed
-          # via a real recovery.log showing "WARNING: could not write v2
-          # tuning script to post-fs-data.d" on a build whose extracted file
-          # list never included patch/pitchkernel_v2_tuning.sh at all. Keep
-          # this list and anykernel.sh's install block in sync: adding a file
-          # to PitchKernel/anykernel/patch/ does NOT automatically make it
-          # into the built zip without an explicit line here.
-          cp -v "$AK3_OURS/patch/pitchkernel_v3_tuning.sh" "$AK3_BUILT/patch/pitchkernel_v3_tuning.sh"
-          chmod 755 "$AK3_BUILT/patch/pitchkernel_cpufreq.sh"
-          chmod 755 "$AK3_BUILT/patch/pitchkernel_banking_prep.sh"
-          chmod 755 "$AK3_BUILT/patch/pitchkernel_sepolicy.sh"
-          chmod 755 "$AK3_BUILT/patch/pitchkernel_v3_tuning.sh"
-
-          echo "Verifying overlaid files:"
+          echo "Verifying PitchKernel customizations survived build.sh..."
           grep -m1 "PitchKernel by Mujinn" "$AK3_BUILT/anykernel.sh" \
             || { echo "ERROR: anykernel.sh does not look like our version"; exit 1; }
           grep -m1 "PitchKernel" "$AK3_BUILT/patch/pitchkernel_cpufreq.sh" \
             || { echo "ERROR: pitchkernel_cpufreq.sh missing expected content"; exit 1; }
           test -f "$AK3_BUILT/patch/pitchkernel_banking_prep.sh" \
-            || { echo "ERROR: pitchkernel_banking_prep.sh was not overlaid"; exit 1; }
+            || { echo "ERROR: pitchkernel_banking_prep.sh missing"; exit 1; }
           test -f "$AK3_BUILT/patch/pitchkernel_v3_tuning.sh" \
-            || { echo "ERROR: pitchkernel_v3_tuning.sh was not overlaid"; exit 1; }
-          echo "Overlay complete."
+            || { echo "ERROR: pitchkernel_v3_tuning.sh missing"; exit 1; }
+          test -f "$AK3_BUILT/tools/ak3-core.sh" \
+            || { echo "ERROR: tools/ak3-core.sh missing — vendored tree incomplete"; exit 1; }
+          test -f "$AK3_BUILT/META-INF/com/google/android/update-binary" \
+            || { echo "ERROR: update-binary missing — vendored tree incomplete"; exit 1; }
+          echo "Vendored AnyKernel3 overlay intact."
 
       - name: Package zip
         run: |

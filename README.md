@@ -2,8 +2,7 @@
 
 Custom Android kernel CI pipeline for SM8250, kernel 4.19.x, non-GKI.
 This repo is the CI wrapper + AnyKernel3 overlay. The actual kernel source
-is cloned fresh on every build from `AstideLabs/android_kernel_xiaomi_sm8250`
-— nothing here compiles standalone.
+is cloned fresh on every build — nothing here compiles standalone.
 
 ## Repo layout
 
@@ -13,8 +12,12 @@ is cloned fresh on every build from `AstideLabs/android_kernel_xiaomi_sm8250`
                    Telegram + GitHub Releases
   notify.yml    — commit push / build result notifications
 PitchKernel/
-  anykernel/    — AK3 overlay (anykernel.sh + helper scripts), copied over
-                   the freshly-cloned AnyKernel3 fork at build time
+  anykernel-vendor/ — full AnyKernel3 tree (AstideLabs base + PitchKernel
+                   overlay merged), vendored directly in this repo. CI seeds
+                   this into the cloned kernel source's anykernel/ dir before
+                   build.sh runs, and neutralizes build.sh's own AnyKernel3
+                   git clone so no external AnyKernel3 repo (forked or
+                   upstream) is touched at build time.
   release/      — telegram.sh, sourced by build.yml to ship the artifact
 module/         — standalone KSU/Magisk module (module.prop + post-fs-data.sh).
                   ORPHANED: not referenced anywhere in build.yml, never zipped,

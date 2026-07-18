@@ -25,16 +25,16 @@ ramdisk_compression=auto;
 ## AnyKernel methods
 . tools/ak3-core.sh;
 
-# GUARD: ak3-core.sh in MujinnPark/AnyKernel3 was historically truncated at 563/966 lines,
-# which left write_boot(), reset_ak(), and SLOT undefined — causing a cryptic
-# "Unable to determine partition. Aborting..." failure at flash time.
-# This check produces a clear error message instead of a silent abort if the
-# fork ever regresses to the truncated state again.
+# GUARD: ak3-core.sh was historically truncated at 563/966 lines in a prior
+# externally-cloned AnyKernel3 source, which left write_boot(), reset_ak(), and
+# SLOT undefined — causing a cryptic "Unable to determine partition. Aborting..."
+# failure at flash time. This check produces a clear error message instead of a
+# silent abort if the vendored copy ever regresses to a truncated state again.
 if ! type write_boot > /dev/null 2>&1; then
   ui_print " ";
   ui_print "  FATAL: write_boot is not defined.";
   ui_print "  ak3-core.sh is truncated (missing write_boot, reset_ak, SLOT).";
-  ui_print "  Rebuild the zip — see MujinnPark/AnyKernel3 tools/ak3-core.sh";
+  ui_print "  Rebuild the zip — see kernel_xiaomi_munch/PitchKernel/anykernel-vendor/tools/ak3-core.sh";
   exit 1;
 fi;
 
