@@ -118,6 +118,8 @@ jobs:
           echo "KERNEL_SOURCE_BRANCH=${KERNEL_SOURCE_BRANCH}" >> $GITHUB_ENV
           echo "KERNEL_SOURCE_SHA=${RESOLVED_SHA}" >> $GITHUB_ENV
           echo "Resolved to commit: ${RESOLVED_SHA}"
+          echo "--- Verifying kernel/sched/walt.c margin_up initializer content ---"
+          grep -n -A2 "sysctl_sched_capacity_margin_up\[MAX_MARGIN_LEVELS\]" apasitu/kernel/sched/walt.c || echo "PATTERN NOT FOUND"
 
       - name: Apply bypass charging patch
         run: |
