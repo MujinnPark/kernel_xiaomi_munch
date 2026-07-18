@@ -393,6 +393,37 @@ jobs:
             exit "$BUILD_EXIT"
           fi
 
+      - name: Verify walt.o actual compiled bytes for margin_up
+        # PitchKernel: diagnostic added 2026-07-18. Source content at clone
+        # time was already confirmed correct (see "Clone apasitu kernel
+        # source" step's grep output), and a skip_ccache=true full rebuild
+        # still produced a boot-time sysctl readback of stock values, not
+        # the patched ones -- so this checks the actual compiled object
+        # directly, closing the gap between "source is right" and "runtime
+        # behavior is wrong" instead of inferring one from the other.
+        run: |
+          cd apasitu
+          OBJ="out/kernel/sched/walt.o"
+          if [ ! -f "$OBJ" ]; then
+            echo "FATAL: $OBJ not found -- was walt.c even compiled this run?"
+            find out -name "walt.o" 2>/dev/null || echo "(no walt.o anywhere under out/)"
+            exit 1
+          fi
+          echo "$OBJ exists, size: $(stat -c%s "$OBJ") bytes, mtime: $(stat -c%y "$OBJ")"
+
+          OBJDUMP="$HOME/neutron-clang/bin/llvm-objdump"
+          [ -x "$OBJDUMP" ] || OBJDUMP="llvm-objdump"
+
+          echo "--- symbol table entry for sysctl_sched_capacity_margin_up ---"
+          "$OBJDUMP" -t "$OBJ" | grep margin_up || echo "SYMBOL NOT FOUND in $OBJ"
+
+          echo "--- raw .data bytes at that symbol (first 16 bytes of .data section) ---"
+          "$OBJDUMP" -s -j .data "$OBJ" | head -6
+
+          echo "--- decoded as little-endian u32 pairs (expect 1078,1056 if patch compiled; 1078,1078 if stock) ---"
+          HEXBYTES=$("$OBJDUMP" -s -j .data "$OBJ" | awk '/^ 0000/{print $2 $3; exit}')
+          python3 -c "import struct,sys; b=bytes.fromhex(sys.argv[1]); print('margin_up[0], margin_up[1] =', struct.unpack('<II', b[:8]))" "$HEXBYTES"
+
       - name: DEBUG - snapshot ReSukiSU/SUSFS generated source layout
         # PitchKernel: temporary, one-off diagnostic step. ReSukiSU's setup.sh
         # (fetched fresh from upstream in the "Build kernel" step above) writes
