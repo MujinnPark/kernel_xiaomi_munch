@@ -402,6 +402,23 @@ jobs:
         # the diagnostic itself, not a real finding about the kernel. Now
         # calls scripts/pitchkernel_extract_margin.py, which reads the
         # symbol table for the real offset first instead of assuming 0x0.
+        #
+        # CORRECTED 2026-07-18 (was wrong in an earlier revision of this
+        # comment): this step runs AFTER "Build kernel" completes, and
+        # "Build kernel" is a single `bash build.sh` call that runs BOTH the
+        # AOSP pass and the MIUI pass internally, sequentially, reusing (not
+        # wiping) the same out/ dir, MIUI last. So by the time this step
+        # runs, out/kernel/sched/walt.o already reflects the LAST make
+        # invocation that touched it -- most likely the MIUI pass, not AOSP
+        # -- based on mtime evidence (walt.o mtime landed ~3 min before this
+        # step ran, consistent with the very end of build.sh's full run, not
+        # the much-earlier AOSP-only midpoint). Not fully certain incremental
+        # `make` genuinely recompiled walt.o a second time vs. left the AOSP
+        # object in place untouched -- if the value here ever looks stock
+        # despite a real source change, that ambiguity is where to look next
+        # (add `-d` / verbose flag to the second make call, or force a
+        # `touch kernel/sched/walt.c` before the MIUI make to guarantee a
+        # real recompile and remove the ambiguity).
         run: |
           cd apasitu
           OBJ="out/kernel/sched/walt.o"
@@ -418,9 +435,21 @@ jobs:
           echo "--- symbol table entry for sysctl_sched_capacity_margin_up ---"
           "$OBJDUMP" -t "$OBJ" | grep margin_up || echo "SYMBOL NOT FOUND in $OBJ"
 
-          echo "--- extracting actual compiled value at the real symbol offset ---"
+          echo "--- extracting actual compiled value at the real symbol offset (post-build.sh, likely MIUI pass) ---"
           python3 "$GITHUB_WORKSPACE/scripts/pitchkernel_extract_margin.py" \
             "$OBJDUMP" "$OBJ" sysctl_sched_capacity_margin_up
+
+          echo ""
+          echo "--- same check against out/vmlinux (post-link, pre-KPM-patch -- closer to what actually ships) ---"
+          VMLINUX="out/vmlinux"
+          if [ -f "$VMLINUX" ]; then
+            echo "$VMLINUX exists, size: $(stat -c%s "$VMLINUX") bytes, mtime: $(stat -c%y "$VMLINUX")"
+            "$OBJDUMP" -t "$VMLINUX" | grep "sysctl_sched_capacity_margin_up$" || echo "SYMBOL NOT FOUND in $VMLINUX (may be stripped)"
+            python3 "$GITHUB_WORKSPACE/scripts/pitchkernel_extract_margin.py" \
+              "$OBJDUMP" "$VMLINUX" sysctl_sched_capacity_margin_up
+          else
+            echo "$VMLINUX not found -- cannot check post-link state"
+          fi
 
       - name: DEBUG - snapshot ReSukiSU/SUSFS generated source layout
         # PitchKernel: temporary, one-off diagnostic step. ReSukiSU's setup.sh

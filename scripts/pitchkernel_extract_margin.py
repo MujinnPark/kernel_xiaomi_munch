@@ -30,8 +30,13 @@ def get_symbol_offset(objdump, obj, symbol):
         [objdump, "-t", obj], capture_output=True, text=True
     ).stdout
     for line in out.splitlines():
-        if symbol in line and ".data" in line:
-            addr_hex = line.split()[0]
+        if ".data" not in line:
+            continue
+        parts = line.split()
+        if not parts:
+            continue
+        if parts[-1] == symbol:
+            addr_hex = parts[0]
             return int(addr_hex, 16)
     return None
 
