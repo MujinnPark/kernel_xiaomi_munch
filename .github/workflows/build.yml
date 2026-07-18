@@ -22,6 +22,11 @@ on:
         required: true
         type: boolean
         default: true
+      skip_ccache:
+        description: 'DIAGNOSTIC: skip restoring ccache for this run (forces a full rebuild, use to rule out stale-cache issues)'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -288,6 +293,7 @@ jobs:
           which -a ccache || type -a ccache
 
       - name: Restore ccache
+        if: ${{ !inputs.skip_ccache }}
         uses: actions/cache@v4
         with:
           path: ~/.cache/ccache_mikernel
@@ -295,6 +301,22 @@ jobs:
           # ksu on/off (the ksu-enabled pass compiles a materially different
           # set of translation units than the vanilla pass). restore-keys
           # fall back progressively so a partial match beats a cold cache.
+          #
+          # KNOWN GAP (found 2026-07-18): this key does NOT hash the kernel
+          # source tree itself -- only the defconfig file. A .c-file-only
+          # change (e.g. kernel/sched/walt.c) does not change this key at
+          # all, so ccache restores the full prior-run cache unconditionally.
+          # CCACHE_COMPILERCHECK=content is supposed to catch this per-object
+          # via content hashing regardless of the restore key, but a same-day
+          # source-only patch (sched/walt: delay big->prime escalation,
+          # commit 91878c475efc) did not show up in the resulting boot image
+          # (sched_upmigrate read back 95/95, stock, instead of the expected
+          # 95/97) on a build with a 99.84% ccache hit rate. Root cause not
+          # yet confirmed -- skip_ccache exists to test this in isolation.
+          # If a skip_ccache=true run DOES produce the correct compiled
+          # value, the key needs to incorporate a source-tree hash (e.g. the
+          # cloned commit SHA) directly, not just rely on ccache's internal
+          # content check.
           key: ccache-munch-${{ runner.os }}-neutronclang23-30062026-ksu${{ inputs.ksu }}-${{ hashFiles('apasitu/arch/arm64/configs/munch_defconfig') }}
           restore-keys: |
             ccache-munch-${{ runner.os }}-neutronclang23-30062026-ksu${{ inputs.ksu }}-
