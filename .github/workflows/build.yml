@@ -107,7 +107,7 @@ jobs:
           # deliberately mean to track a different branch, that's fine — just make
           # the change here, explicitly, and update KERNEL_SOURCE_BRANCH below to
           # match. Do not go back to letting `git clone` pick for you.
-          KERNEL_SOURCE_BRANCH: android16-aptusitu
+          KERNEL_SOURCE_BRANCH: android16-pitchkernel
         run: |
           echo "Cloning branch: ${KERNEL_SOURCE_BRANCH} (pinned explicitly — see step comment)"
           git clone --depth=1 --single-branch -b "${KERNEL_SOURCE_BRANCH}" \
