@@ -297,7 +297,16 @@ jobs:
             echo "CONFIG_TCP_CONG_WESTWOOD=y"
             echo "CONFIG_NET_SCH_FQ=y"
             echo "CONFIG_DEFAULT_BBR=y"
-            echo 'CONFIG_DEFAULT_TCP_CONG="bbr"'
+            # CONFIG_DEFAULT_TCP_CONG intentionally omitted: it is a
+            # Kconfig-derived string from the DEFAULT_BBR/DEFAULT_CUBIC
+            # choice block (net/ipv4/Kconfig), not an independent
+            # setting. A prior edit here dropped CONFIG_DEFAULT_BBR=y
+            # entirely while keeping the bogus derived-string write,
+            # leaving the choice with no selected member at all --
+            # this crashed syncconfig into an unanswerable interactive
+            # prompt (EOF on CI stdin) and corrupted every symbol
+            # resolved after it, including CONFIG_SCHED_WALT.
+            # CONFIG_DEFAULT_BBR=y alone is sufficient.
             echo ""
             echo "# I/O scheduler — PitchKernel"
             echo "# CONFIG_IOSCHED_CFQ is not set"
