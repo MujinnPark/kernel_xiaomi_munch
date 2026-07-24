@@ -486,6 +486,18 @@ jobs:
         # real recompile and remove the ambiguity).
         run: |
           cd apasitu
+          # This whole diagnostic exists to verify a WALT-specific tuning
+          # value (sysctl_sched_capacity_margin_up) survived compilation
+          # correctly -- it has no meaning when CONFIG_SCHED_WALT is
+          # disabled (PELT builds), where walt.o is never compiled at all
+          # (see kernel/sched/Makefile: obj-$(CONFIG_SCHED_WALT) += walt.o
+          # ...). Skip cleanly rather than fatally when that's the case,
+          # instead of assuming WALT is always on the way this step
+          # originally did.
+          if grep -q "^# CONFIG_SCHED_WALT is not set" out/.config 2>/dev/null; then
+            echo "CONFIG_SCHED_WALT is disabled in this build (PELT) -- walt.o is not expected to exist. Skipping this WALT-specific diagnostic."
+            exit 0
+          fi
           OBJ="out/kernel/sched/walt.o"
           if [ ! -f "$OBJ" ]; then
             echo "FATAL: $OBJ not found -- was walt.c even compiled this run?"
