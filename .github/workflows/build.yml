@@ -27,6 +27,11 @@ on:
         required: false
         type: boolean
         default: false
+      test_lru_gen:
+        description: 'DIAGNOSTIC: force CONFIG_LRU_GEN=y for this run only (PitchKernel MGLRU backport, Phase 0+ verification — see PitchKernel project notes). Does not modify munch_defconfig permanently.'
+        required: false
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -341,6 +346,25 @@ jobs:
           echo ""
           echo "Verifying uclamp directives:"
           grep -E "UCLAMP_TASK|LOCALVERSION_AUTO" "$DEFCONFIG" || echo "WARNING: grep found nothing"
+
+      - name: Force CONFIG_LRU_GEN for diagnostic test build (PitchKernel MGLRU)
+        # Only runs when test_lru_gen=true is explicitly set on workflow_dispatch.
+        # Never affects normal builds -- input defaults to false. This does NOT
+        # edit munch_defconfig's committed content on disk in the repo, only the
+        # checked-out copy in this CI run's workspace, so nothing needs reverting.
+        # Purpose: verify Phase 0 MGLRU scaffolding (struct lru_gen_struct in
+        # mmzone.h, LRU_GEN_WIDTH/LRU_REFS_WIDTH bit-packing in
+        # page-flags-layout.h) actually compiles clean under the real
+        # ZyCromerZ Clang toolchain, not just Termux's host gcc/syncconfig.
+        if: ${{ inputs.test_lru_gen }}
+        run: |
+          echo "::warning::test_lru_gen=true — forcing CONFIG_LRU_GEN=y for this diagnostic run only"
+          cd apasitu
+          ./scripts/config --file arch/arm64/configs/munch_defconfig \
+            --enable LRU_GEN
+          cd ..
+          echo "Confirming LRU_GEN is set:"
+          grep LRU_GEN apasitu/arch/arm64/configs/munch_defconfig || { echo "::error::CONFIG_LRU_GEN not found in defconfig after --enable -- Phase 0 Kconfig entry may be missing from this branch"; exit 1; }
 
       - name: Setup ccache
         run: |
