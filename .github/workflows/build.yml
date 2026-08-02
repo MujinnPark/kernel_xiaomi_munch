@@ -27,13 +27,8 @@ on:
         required: false
         type: boolean
         default: false
-      test_lru_gen:
-        description: 'DIAGNOSTIC: force CONFIG_LRU_GEN=y for this run only (PitchKernel MGLRU backport, Phase 0+ verification — see PitchKernel project notes). Does not modify munch_defconfig permanently.'
-        required: false
-        type: boolean
-        default: false
       source_branch_override:
-        description: 'DIAGNOSTIC: build a different branch of MujinnPark/android_kernel_xiaomi_sm8250 for this run only (e.g. mglru-phase1). Leave empty for the normal pinned android16-pitchkernel branch -- see the "PINNED ON PURPOSE" comment on the clone step before changing the default.'
+        description: 'DIAGNOSTIC: build a different branch of MujinnPark/android_kernel_xiaomi_sm8250 for this run only (e.g. a feature branch under test). Leave empty for the normal pinned android16-pitchkernel branch -- see the "PINNED ON PURPOSE" comment on the clone step before changing the default.'
         required: false
         type: string
         default: ''
@@ -118,11 +113,13 @@ jobs:
           # the change here, explicitly, and update KERNEL_SOURCE_BRANCH below to
           # match. Do not go back to letting `git clone` pick for you.
           #
-          # source_branch_override (added for PitchKernel MGLRU phase-by-phase
-          # testing): only takes effect when explicitly set on workflow_dispatch.
-          # Empty input -> falls through to the pinned android16-pitchkernel
-          # default below, same as before this input existed. This is a
-          # per-run diagnostic override, not a replacement for updating the
+          # source_branch_override (originally added for PitchKernel MGLRU
+          # phase-by-phase testing, kept as general-purpose infra after that
+          # backport was reverted): only takes effect when explicitly set on
+          # workflow_dispatch. Empty input -> falls through to the pinned
+          # android16-pitchkernel default below, same as before this input
+          # existed. This is a per-run diagnostic override, not a replacement
+          # for updating the
           # pin above if you actually want to permanently track a different
           # branch.
           KERNEL_SOURCE_BRANCH: ${{ inputs.source_branch_override != '' && inputs.source_branch_override || 'android16-pitchkernel' }}
@@ -362,25 +359,6 @@ jobs:
           echo ""
           echo "Verifying uclamp directives:"
           grep -E "UCLAMP_TASK|LOCALVERSION_AUTO" "$DEFCONFIG" || echo "WARNING: grep found nothing"
-
-      - name: Force CONFIG_LRU_GEN for diagnostic test build (PitchKernel MGLRU)
-        # Only runs when test_lru_gen=true is explicitly set on workflow_dispatch.
-        # Never affects normal builds -- input defaults to false. This does NOT
-        # edit munch_defconfig's committed content on disk in the repo, only the
-        # checked-out copy in this CI run's workspace, so nothing needs reverting.
-        # Purpose: verify Phase 0 MGLRU scaffolding (struct lru_gen_struct in
-        # mmzone.h, LRU_GEN_WIDTH/LRU_REFS_WIDTH bit-packing in
-        # page-flags-layout.h) actually compiles clean under the real
-        # ZyCromerZ Clang toolchain, not just Termux's host gcc/syncconfig.
-        if: ${{ inputs.test_lru_gen }}
-        run: |
-          echo "::warning::test_lru_gen=true — forcing CONFIG_LRU_GEN=y for this diagnostic run only"
-          cd apasitu
-          ./scripts/config --file arch/arm64/configs/munch_defconfig \
-            --enable LRU_GEN
-          cd ..
-          echo "Confirming LRU_GEN is set:"
-          grep LRU_GEN apasitu/arch/arm64/configs/munch_defconfig || { echo "::error::CONFIG_LRU_GEN not found in defconfig after --enable -- Phase 0 Kconfig entry may be missing from this branch"; exit 1; }
 
       - name: Setup ccache
         run: |
