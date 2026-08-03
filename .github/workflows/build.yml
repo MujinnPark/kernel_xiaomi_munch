@@ -996,9 +996,17 @@ jobs:
               echo "WARNING: $TARGET is not executable — fixing"
               chmod 755 "$TARGET"
             fi
-            # Verify the script has a PitchKernel log line (so logcat tag will appear on device)
-            if ! grep -q "log -p.*PitchKernel" "$TARGET"; then
-              echo "WARNING: $TARGET has no 'log -p.*PitchKernel' line — boot execution will be silent"
+            # Verify the script has a PitchKernel log line (so logcat tag will appear on device).
+            # Accounts for both a hardcoded tag (log -p i -t PitchKernel ...) and a tag set via a
+            # variable (LOG_TAG="PitchKernelV3" ... log -p i -t "$LOG_TAG" ...), since the latter
+            # is a legitimate pattern (e.g. versioned tags for logcat -s PitchKernelV3) and
+            # should not be flagged as silent just because grep cannot see through the variable.
+            if grep -q "log -p.*PitchKernel" "$TARGET"; then
+              : # hardcoded tag present
+            elif grep -qE '^[[:space:]]*LOG_TAG=.*PitchKernel' "$TARGET" && grep -q 'log -p.*"$LOG_TAG"' "$TARGET"; then
+              : # tag set via LOG_TAG variable and used in a log -p call
+            else
+              echo "WARNING: $TARGET has no 'log -p.*PitchKernel' line (hardcoded or via LOG_TAG) — boot execution will be silent"
             fi
             echo "OK: $TARGET"
           done
