@@ -857,6 +857,42 @@ jobs:
 
           echo "uclamp verification passed — real, not just labeled."
 
+      - name: Verify touch tuning defaults actually landed
+        run: |
+          # Same failure class as the SUSFS and uclamp incidents above:
+          # a source-level default can be silently reverted by a merge,
+          # a stale patch, or a future hand-edit of the dtsi without
+          # anyone noticing, since nothing previously enforced it.
+          #
+          # This checks the actual dtsi SOURCE that was compiled, not a
+          # label or comment. It intentionally does NOT check the compiled
+          # .dtb (no dtc-based verification exists elsewhere in this
+          # pipeline yet, and adding one is out of scope for this gate).
+          #
+          # PitchKernel context: touch-def-array indexes into
+          # touch-range-array = <1 5 10 15 20> for four Focaltech touch
+          # tuning modes (up-threshold, tolerance, aim-sensitivity,
+          # tap-stability). Stock/original default was <3 3 3 3>.
+          # PitchKernel nudges this to <2 2 2 2> as a conservative,
+          # reversible change -- direction (lower = more responsive) is
+          # NOT empirically confirmed on-device, see the dtsi comment
+          # and drivers/input/touchscreen/xiaomi/xiaomi_touch.c's
+          # touch_tuning_debug sysfs node for on-device verification.
+          DTSI_FILE="apasitu/arch/arm64/boot/dts/vendor/qcom/munch-sm8250.dtsi"
+          [ -f "$DTSI_FILE" ] || { echo "FATAL: $DTSI_FILE not found"; exit 1; }
+
+          echo "Checking $DTSI_FILE for touch-def-array..."
+          if grep -q "focaltech,touch-def-array = <2 2 2 2>;" "$DTSI_FILE"; then
+            echo "  OK: focaltech,touch-def-array = <2 2 2 2>;"
+          else
+            echo "  FATAL: touch-def-array is not <2 2 2 2> in $DTSI_FILE"
+            echo "  Current value:"
+            grep "focaltech,touch-def-array" "$DTSI_FILE" || echo "    (property not found at all)"
+            exit 1
+          fi
+
+          echo "Touch tuning defaults verification passed — real, not just labeled."
+
       - name: Verify pitchkernel scripts are in the AK3 overlay
         run: |
           for f in pitchkernel_cpufreq.sh pitchkernel_banking_prep.sh pitchkernel_sepolicy.sh pitchkernel_v3_tuning.sh; do
