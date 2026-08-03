@@ -827,7 +827,16 @@ jobs:
           CONFIG_FILE="apasitu/out/.config"
           [ -f "$CONFIG_FILE" ] || { echo "FATAL: $CONFIG_FILE not found — build may not have produced a config"; exit 1; }
 
-          SUSFS_SYMS="CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_SPOOF_UNAME"
+          # PitchKernel: expanded from 5 to all 9 KSU_SUSFS_* sub-symbols.
+          # Note: every one of these has "depends on KSU_SUSFS" in
+          # KernelSU/kernel/Kconfig, so kbuild's own syncconfig/olddefconfig
+          # already forces all 9 to n whenever KSU_SUSFS=n, regardless of
+          # what scripts/config's explicit -d calls in build.sh do -- this
+          # gate checking all 9 isn't covering a real gap so much as it is
+          # removing reliance on "kbuild's dependency graph enforces this
+          # correctly" as an unverified assumption. Explicit is better than
+          # implicit for a gate whose whole purpose is not trusting labels.
+          SUSFS_SYMS="CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_ENABLE_LOG CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG CONFIG_KSU_SUSFS_OPEN_REDIRECT CONFIG_KSU_SUSFS_SUS_MAP"
 
           if [ "${{ matrix.susfs_enable }}" == "true" ]; then
             echo "Checking $CONFIG_FILE for KSU and SUSFS symbols (variant: ${{ matrix.label }}, expect PRESENT)..."
