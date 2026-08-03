@@ -5,16 +5,19 @@
 # Adapted from LuminaireProtocol/telegram.sh
 # Source this script after build; requires env vars:
 #   ZIP_PATH, ZIP_NAME, KERNEL_VERSION
-#   ROOT_SOLUTION (RESUKISU|KSU_NEXT|SUKISU|VANILLA) — driven by build.yml's
-#     env.ROOT_SOLUTION_KEY. History: shipped as RESUKISU, briefly and
-#     incorrectly switched to KSU_NEXT without a working susfs patch step
-#     (see build.yml comments), reverted back to RESUKISU. This case
+#   ROOT_SOLUTION (RESUKISU|RESUKISU_NOSUSFS|KSU_NEXT|SUKISU|VANILLA) — driven
+#     by build.yml's matrix.zip_type. History: shipped as RESUKISU, briefly
+#     and incorrectly switched to KSU_NEXT without a working susfs patch step
+#     (see build.yml comments), reverted back to RESUKISU. RESUKISU_NOSUSFS
+#     added for the ReSukiSU-only (no SUSFS) matrix variant -- this case
 #     statement supports all values so it doesn't need touching again if
 #     the provider changes — only build.yml's env block should need editing.
-#   SUSFS_ENABLED (true|false) — NOTE: this only reflects the `ksu` workflow
-#     toggle, not whether susfs4ksu patches were actually applied. build.yml
-#     has no explicit SUSFS patching step as of this writing — verify before
-#     trusting this label.
+#   SUSFS_ENABLED (true|false) — reflects matrix.susfs_enable directly, i.e.
+#     whether this specific variant's build.sh invocation passed "nosusfs".
+#     Still does not independently re-verify susfs.h presence beyond the
+#     check below -- that verification lives in build.yml's
+#     "Verify SUSFS actually compiled in (or actually excluded)" gate, which
+#     runs before this script and fails the job first if the label would lie.
 #   KERNEL_SRC, KERNEL_BRANCH, COMPILER_STRING
 # ======================================================
 
@@ -45,11 +48,12 @@ if [ "$ZIP_SIZE_BYTES" -gt "$TELEGRAM_MAX_FILE_BYTES" ]; then
 fi
 
 case "${ROOT_SOLUTION:-VANILLA}" in
-    KSU_NEXT) ROOT_DISPLAY="KernelSU-Next" ;;
-    RESUKISU) ROOT_DISPLAY="ReSukiSU" ;;
-    SUKISU)   ROOT_DISPLAY="SukiSU"   ;;
-    VANILLA)  ROOT_DISPLAY="Vanilla"  ;;
-    *)        ROOT_DISPLAY="${ROOT_SOLUTION}" ;;
+    KSU_NEXT)          ROOT_DISPLAY="KernelSU-Next" ;;
+    RESUKISU)          ROOT_DISPLAY="ReSukiSU" ;;
+    RESUKISU_NOSUSFS)  ROOT_DISPLAY="ReSukiSU" ;;
+    SUKISU)            ROOT_DISPLAY="SukiSU"   ;;
+    VANILLA)           ROOT_DISPLAY="Vanilla"  ;;
+    *)                 ROOT_DISPLAY="${ROOT_SOLUTION}" ;;
 esac
 
 SUSFS_VER="N/A"
@@ -69,6 +73,15 @@ if [ "${SUSFS_ENABLED:-false}" = "true" ] && [ "${ROOT_SOLUTION:-}" != "VANILLA"
     else
         warn "SUSFS header not found at $SUSFS_H — SUSFS_ENABLED=true but header missing"
     fi
+elif [ "${ROOT_SOLUTION:-}" = "RESUKISU_NOSUSFS" ]; then
+    # PitchKernel: distinguish "explicitly disabled for this variant" from
+    # plain N/A (which reads as "not checked/unknown" to a Telegram audience
+    # who otherwise cannot tell this apart from a vanilla no-root build at a
+    # glance). SUSFS source is still present in the tree (setup.sh fetches it
+    # unconditionally alongside the KSU driver) but the KSU_SUSFS* Kconfig
+    # symbols are off -- build.yml's verification gate already confirmed this
+    # before this script ever runs, so this label is not a bare claim.
+    SUSFS_VER="disabled (ReSukiSU only)"
 fi
 
 # Bug fix: original mdv2_code_escape() only escaped \ and \`.
