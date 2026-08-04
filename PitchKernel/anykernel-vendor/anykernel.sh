@@ -130,9 +130,7 @@ else
   ui_print "  WARNING: could not write helper scripts to post-fs-data.d";
   ui_print "  (KSU/Magisk may not be initialized yet on first flash)";
 fi;
-if [ -f /data/adb/post-fs-data.d/90-pitchkernel_v3_tuning.sh ]; then
-  ui_print "  v3 scheduler/GPU tuning installed (check logcat -s PitchKernelV3 after boot)";
-else
+if [ ! -f /data/adb/post-fs-data.d/90-pitchkernel_v3_tuning.sh ]; then
   ui_print "  WARNING: could not write v3 tuning script to post-fs-data.d";
 fi;
 ui_print " ";
