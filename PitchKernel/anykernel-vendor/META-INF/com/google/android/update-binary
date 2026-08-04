@@ -564,7 +564,13 @@ do_vendorlevelcheck;
 
 ui_print "Installing...";
 # hack to maintain support for anykernel.sh files that weren't updated correctly along with the AK core
-CORE=$(grep -oE 'ak.*core.sh' anykernel.sh);
+# NOTE: anchored to the actual '. tools/ak*-core.sh' source line (and limited to the
+# first match) so that comments/guard messages elsewhere in anykernel.sh that also
+# mention the core script filename aren't captured into CORE alongside it.
+CORE=$(grep -m1 -oE '^\. tools/(ak.*core\.sh)' anykernel.sh | grep -oE 'ak.*core\.sh$');
+if [ -z "$CORE" ]; then
+  CORE=$(grep -m1 -oE 'ak.*core.sh' anykernel.sh);
+fi;
 [ -f tools/$CORE ] || ln -s $AKHOME/tools/ak*-core.sh $AKHOME/tools/$CORE;
 ash anykernel.sh;
 if [ $? != 0 ]; then
