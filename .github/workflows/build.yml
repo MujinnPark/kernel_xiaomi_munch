@@ -41,7 +41,7 @@ on:
         type: boolean
         default: false
       source_branch_override:
-        description: 'DIAGNOSTIC: build a different branch of MujinnPark/android_kernel_xiaomi_sm8250 for this run only (e.g. a feature branch under test). Leave empty for the normal pinned android16-pitchkernel branch -- see the "PINNED ON PURPOSE" comment on the clone step before changing the default.'
+        description: 'DIAGNOSTIC: build a different branch of MujinnPark/pitch_kernel_sm8250 for this run only (e.g. a feature branch under test). Leave empty for the normal pinned main branch -- see the "PINNED ON PURPOSE" comment on the clone step before changing the default.'
         required: false
         type: string
         default: ''
@@ -131,28 +131,36 @@ jobs:
           # Every build run before this fix may have silently built the wrong tree
           # with no error, because both branches have a valid build.sh/build-miui.sh
           # and both build successfully — there's no structural signal that you got
-          # the wrong one. If AstideLabs' default branch changes again, or if you
+          # the wrong one. If the default branch changes again, or if you
           # deliberately mean to track a different branch, that's fine — just make
           # the change here, explicitly, and update KERNEL_SOURCE_BRANCH below to
           # match. Do not go back to letting `git clone` pick for you.
+          #
+          # 2026-08-18: source repo migrated from MujinnPark/android_kernel_xiaomi_sm8250
+          # (branch android16-pitchkernel) to MujinnPark/pitch_kernel_sm8250 (branch
+          # main) -- full history preserved via force-push mirror, content-verified
+          # against the walt.c tripwire below before this migration was made. The old
+          # repo is being kept around (archived, not deleted) as a fallback; if this
+          # pin is ever reverted, revert branch to android16-pitchkernel too, they are
+          # not interchangeable across repos.
           #
           # source_branch_override (originally added for PitchKernel MGLRU
           # phase-by-phase testing, kept as general-purpose infra after that
           # backport was reverted): only takes effect when explicitly set on
           # workflow_dispatch. Empty input -> falls through to the pinned
-          # android16-pitchkernel default below, same as before this input
+          # main default below, same as before this input
           # existed. This is a per-run diagnostic override, not a replacement
           # for updating the
           # pin above if you actually want to permanently track a different
           # branch.
-          KERNEL_SOURCE_BRANCH: ${{ inputs.source_branch_override != '' && inputs.source_branch_override || 'android16-pitchkernel' }}
+          KERNEL_SOURCE_BRANCH: ${{ inputs.source_branch_override != '' && inputs.source_branch_override || 'main' }}
         run: |
           if [ -n "${{ inputs.source_branch_override }}" ]; then
-            echo "::warning::source_branch_override set — building '${KERNEL_SOURCE_BRANCH}' instead of the pinned android16-pitchkernel branch"
+            echo "::warning::source_branch_override set — building '${KERNEL_SOURCE_BRANCH}' instead of the pinned main branch"
           fi
           echo "Cloning branch: ${KERNEL_SOURCE_BRANCH} (pinned explicitly — see step comment)"
           git clone --depth=1 --single-branch -b "${KERNEL_SOURCE_BRANCH}" \
-            https://github.com/MujinnPark/android_kernel_xiaomi_sm8250.git \
+            https://github.com/MujinnPark/pitch_kernel_sm8250.git \
             apasitu
           ls apasitu/build.sh apasitu/build-miui.sh
           RESOLVED_SHA=$(git -C apasitu rev-parse --short HEAD)
@@ -431,7 +439,7 @@ jobs:
           # value, the key needs to incorporate a source-tree hash (e.g. the
           # cloned commit SHA) directly, not just rely on ccache's internal
           # content check.
-          key: ccache-munch-${{ runner.os }}-neutronclang23-30062026-${{ matrix.zip_type }}-${{ inputs.source_branch_override != '' && inputs.source_branch_override || 'android16-pitchkernel' }}-${{ hashFiles('apasitu/arch/arm64/configs/munch_defconfig') }}
+          key: ccache-munch-${{ runner.os }}-neutronclang23-30062026-${{ matrix.zip_type }}-${{ inputs.source_branch_override != '' && inputs.source_branch_override || 'main' }}-${{ hashFiles('apasitu/arch/arm64/configs/munch_defconfig') }}
           restore-keys: |
             ccache-munch-${{ runner.os }}-neutronclang23-30062026-${{ matrix.zip_type }}-
             ccache-munch-${{ runner.os }}-neutronclang23-30062026-
@@ -682,7 +690,7 @@ jobs:
           # restore key would silently no-op on every run after the first.
           # run_id makes each save unique; restore-keys prefix-matching on the
           # next run picks up the most recent save automatically.
-          key: ccache-munch-${{ runner.os }}-neutronclang23-30062026-${{ matrix.zip_type }}-${{ inputs.source_branch_override != '' && inputs.source_branch_override || 'android16-pitchkernel' }}-${{ hashFiles('apasitu/arch/arm64/configs/munch_defconfig') }}-${{ github.run_id }}
+          key: ccache-munch-${{ runner.os }}-neutronclang23-30062026-${{ matrix.zip_type }}-${{ inputs.source_branch_override != '' && inputs.source_branch_override || 'main' }}-${{ hashFiles('apasitu/arch/arm64/configs/munch_defconfig') }}-${{ github.run_id }}
 
       - name: Annotate known-benign build noise
         run: |
@@ -1206,7 +1214,7 @@ jobs:
           # step above. Now reflects what was actually resolved and cloned this
           # run, so a future branch drift shows up in the Telegram message
           # instead of being invisible again.
-          KERNEL_BRANCH: "${{ inputs.source_branch_override != '' && inputs.source_branch_override || 'android16-pitchkernel' }}@${{ env.KERNEL_SOURCE_SHA }}"
+          KERNEL_BRANCH: "${{ inputs.source_branch_override != '' && inputs.source_branch_override || 'main' }}@${{ env.KERNEL_SOURCE_SHA }}"
           COMPILER_STRING: "ZyCromerZ Clang 16.0.6-20260510"
           KERNEL_SRC: "apasitu"
         run: |
@@ -1235,7 +1243,7 @@ jobs:
             **Build date:** ${{ env.BUILD_DATE }}
             **Variant:** ${{ matrix.label }}
             **Type:** ${{ env.BUILD_TYPE }}
-            **Base:** MujinnPark/android_kernel_xiaomi_sm8250 @ `${{ inputs.source_branch_override != '' && inputs.source_branch_override || 'android16-pitchkernel' }}` (`${{ env.KERNEL_SOURCE_SHA }}`)
+            **Base:** MujinnPark/pitch_kernel_sm8250 @ `${{ inputs.source_branch_override != '' && inputs.source_branch_override || 'main' }}` (`${{ env.KERNEL_SOURCE_SHA }}`)
             **Toolchain:** ZyCromerZ Clang 16.0.6-20260510
 
             ### Features
