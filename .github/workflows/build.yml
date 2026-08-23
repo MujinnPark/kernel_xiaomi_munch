@@ -218,7 +218,7 @@ jobs:
         #     BUILD=1, -j1) still hit 319 occurrences.
         #   - Not make's SIGPIPE-ignore-for-children behavior (introduced
         #     in make 4.4) -- this runner's make --version is 4.3.
-        # Switching to ZyCromerZ Clang 16.0.6-20260510, a numbered stable
+        # Switching to ZyCromerZ Clang 16.0.6-20260807, a numbered stable
         # release, eliminated the error entirely: run 80019238803, 0
         # occurrences, full pipeline green through release publish. This
         # matches this project's own documented intended toolchain
@@ -238,13 +238,13 @@ jobs:
         run: |
           mkdir -p "$HOME/neutron-clang"
           cd "$HOME/neutron-clang"
-          curl -LO "https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260510-release/Clang-16.0.6-20260510.tar.gz"
-          if [ ! -s "Clang-16.0.6-20260510.tar.gz" ]; then
+          curl -LO "https://github.com/ZyCromerZ/Clang/releases/download/16.0.6-20260807-release/Clang-16.0.6-20260807.tar.gz"
+          if [ ! -s "Clang-16.0.6-20260807.tar.gz" ]; then
             echo "::error::Download of ZyCromerZ Clang 16.0.6 tarball failed or produced an empty file. If ZyCromerZ has rolled this tag forward or removed it, check https://github.com/ZyCromerZ/Clang/releases for the current 16.0.6 asset filename and update the curl line above and the tar/rm lines below to match."
             exit 1
           fi
-          tar -xzf "Clang-16.0.6-20260510.tar.gz"
-          rm -f "Clang-16.0.6-20260510.tar.gz"
+          tar -xzf "Clang-16.0.6-20260807.tar.gz"
+          rm -f "Clang-16.0.6-20260807.tar.gz"
           if [ ! -x "$HOME/neutron-clang/bin/clang" ]; then
             echo "::error::Extracted archive does not contain bin/clang at the expected path. The archive's internal directory structure may differ from what was assumed -- inspect it manually."
             ls -la "$HOME/neutron-clang"
@@ -1215,7 +1215,7 @@ jobs:
           # run, so a future branch drift shows up in the Telegram message
           # instead of being invisible again.
           KERNEL_BRANCH: "${{ inputs.source_branch_override != '' && inputs.source_branch_override || 'main' }}@${{ env.KERNEL_SOURCE_SHA }}"
-          COMPILER_STRING: "ZyCromerZ Clang 16.0.6-20260510"
+          COMPILER_STRING: "ZyCromerZ Clang 16.0.6-20260807"
           KERNEL_SRC: "apasitu"
         run: |
           source PitchKernel/release/telegram.sh
@@ -1244,7 +1244,7 @@ jobs:
             **Variant:** ${{ matrix.label }}
             **Type:** ${{ env.BUILD_TYPE }}
             **Base:** MujinnPark/pitch_kernel_sm8250 @ `${{ inputs.source_branch_override != '' && inputs.source_branch_override || 'main' }}` (`${{ env.KERNEL_SOURCE_SHA }}`)
-            **Toolchain:** ZyCromerZ Clang 16.0.6-20260510
+            **Toolchain:** ZyCromerZ Clang 16.0.6-20260807
 
             ### Features
             - Root: ${{ matrix.ksu_enable == 'true' && env.ROOT_PROVIDER || 'none (vanilla, no root)' }}
