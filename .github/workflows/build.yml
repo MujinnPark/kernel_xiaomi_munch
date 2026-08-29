@@ -28,13 +28,10 @@ on:
         description: 'Which variant(s) to build'
         required: true
         type: choice
-        default: 'susfs+nosusfs'
+        default: 'nosusfs-only'
         options:
-          - 'susfs+nosusfs'
-          - 'susfs-only'
           - 'nosusfs-only'
           - 'vanilla-only'
-          - 'all-three'
       skip_ccache:
         description: 'DIAGNOSTIC: skip restoring ccache for this run (forces a full rebuild, use to rule out stale-cache issues)'
         required: false
@@ -55,18 +52,25 @@ jobs:
     runs-on: ubuntu-24.04
     strategy:
       # PitchKernel: one job body, matrix'd across variants instead of
-      # duplicating the whole pipeline per variant (see requirement: "reuse
-      # the existing workflow where possible"). Each matrix entry sets
-      # ksu_enable / susfs_enable / label / zip_type independently so
-      # build.sh's third positional arg (nosusfs) and every downstream
-      # label/artifact-name/gate step can key off matrix.* instead of a
-      # single ksu boolean. fail-fast: false so one variant failing (e.g.
-      # a SUSFS-specific compile error) does not cancel the other variant's
-      # otherwise-healthy build -- each variant ships or fails on its own
-      # merit, as required.
+      # duplicating the whole pipeline per variant. Each matrix entry sets
+      # ksu_enable / label / zip_type independently so build.sh's third
+      # positional arg (nosusfs) and every downstream label/artifact-name/
+      # gate step can key off matrix.* instead of a single ksu boolean.
+      # fail-fast: false so one variant failing does not cancel the other
+      # variant's otherwise-healthy build -- each variant ships or fails on
+      # its own merit, as required.
+      #
+      # SUSFS variant removed (see commit that removed it): ReSukiSU's main
+      # branch hook code (kernel/hook/setuid_hook.c, kernel/feature/
+      # sucompat.c) calls a susfs_*no_su*/susfs_set_sdcard_android_data_
+      # decrypted_key_false API family that no SUSFS source available for
+      # this 4.19 non-GKI target actually defines -- confirmed against both
+      # the vendored SUSFS 2.2.0 tree and susfs4ksu's kernel-4.19 branch.
+      # susfs_enable is gone from every matrix entry; ksu_enable (ReSukiSU,
+      # no SUSFS) and the vanilla no-root build remain.
       fail-fast: false
       matrix:
-        include: ${{ fromJSON( inputs.variants == 'susfs+nosusfs' && '[{"label":"ReSukiSU+SUSFS","ksu_enable":"true","susfs_enable":"true","zip_type":"resukisu-susfs"},{"label":"ReSukiSU-NoSUSFS","ksu_enable":"true","susfs_enable":"false","zip_type":"resukisu-nosusfs"}]' || inputs.variants == 'susfs-only' && '[{"label":"ReSukiSU+SUSFS","ksu_enable":"true","susfs_enable":"true","zip_type":"resukisu-susfs"}]' || inputs.variants == 'nosusfs-only' && '[{"label":"ReSukiSU-NoSUSFS","ksu_enable":"true","susfs_enable":"false","zip_type":"resukisu-nosusfs"}]' || inputs.variants == 'vanilla-only' && '[{"label":"Vanilla-NoRoot","ksu_enable":"false","susfs_enable":"false","zip_type":"stock"}]' || '[{"label":"ReSukiSU+SUSFS","ksu_enable":"true","susfs_enable":"true","zip_type":"resukisu-susfs"},{"label":"ReSukiSU-NoSUSFS","ksu_enable":"true","susfs_enable":"false","zip_type":"resukisu-nosusfs"},{"label":"Vanilla-NoRoot","ksu_enable":"false","susfs_enable":"false","zip_type":"stock"}]' ) }}
+        include: ${{ fromJSON( inputs.variants == 'vanilla-only' && '[{"label":"Vanilla-NoRoot","ksu_enable":"false","zip_type":"stock"}]' || '[{"label":"ReSukiSU-NoSUSFS","ksu_enable":"true","zip_type":"resukisu-nosusfs"}]' ) }}
     env:
       # SINGLE SOURCE OF TRUTH for which root provider this pipeline builds.
       # Every label below (Telegram start message, artifact/zip name, telegram.sh
@@ -414,7 +418,7 @@ jobs:
         with:
           path: ~/.cache/ccache_mikernel
           # Key includes OS, pinned clang release, defconfig content hash, and
-          # the matrix variant (zip_type: resukisu-susfs / resukisu-nosusfs /
+          # the matrix variant (zip_type: resukisu-nosusfs /
           # stock each compile a materially different set of translation
           # units, and SUSFS_ENABLE toggles ~10 Kconfig symbols that change
           # which .o files get built at all -- these MUST NOT share a cache
@@ -495,16 +499,12 @@ jobs:
           LOG="/tmp/pitchkernel-build-step.log"
 
           set +e
-          # PitchKernel: matrix.ksu_enable / matrix.susfs_enable drive build.sh's
-          # positional args here. build.sh's third arg "nosusfs" only has effect
-          # when the second arg is "ksu" -- see build.sh's own SUSFS_ENABLE
-          # derivation comment for why (SUSFS is a separate axis from KSU_ENABLE,
-          # not implied by it; ReSukiSU's setup.sh always fetches SUSFS source
-          # alongside the KSU driver, this only controls whether the KSU_SUSFS*
-          # Kconfig symbols compile that source in).
-          if [ "${{ matrix.ksu_enable }}" == "true" ] && [ "${{ matrix.susfs_enable }}" == "true" ]; then
-            bash ${{ inputs.script }} munch ksu > "$LOG" 2>&1
-          elif [ "${{ matrix.ksu_enable }}" == "true" ] && [ "${{ matrix.susfs_enable }}" == "false" ]; then
+          # PitchKernel: matrix.ksu_enable drives build.sh's positional args
+          # here. SUSFS variant removed -- ksu_enable=true always means
+          # ReSukiSU without SUSFS (build.sh's "nosusfs" third arg), since no
+          # SUSFS source available for this 4.19 non-GKI target actually
+          # satisfies ReSukiSU's current hook API (see matrix comment above).
+          if [ "${{ matrix.ksu_enable }}" == "true" ]; then
             bash ${{ inputs.script }} munch ksu nosusfs > "$LOG" 2>&1
           else
             bash ${{ inputs.script }} munch > "$LOG" 2>&1
@@ -804,7 +804,7 @@ jobs:
           path: /tmp/pitchkernel-build-step.log
           retention-days: 7
 
-      - name: Verify SUSFS actually compiled in (or actually excluded)
+      - name: Verify SUSFS symbols did not leak in
         run: |
           # This step exists because of a real incident: a prior CI change swapped
           # the root provider in apasitu/build.sh (ReSukiSU -> KernelSU-Next) without
@@ -812,21 +812,15 @@ jobs:
           # KSU_SUSFS is not a real Kconfig symbol unless the root provider's tree
           # actually contains susfs source. scripts/config does not validate against
           # Kconfig — it blindly writes the .config line — and kbuild silently drops
-          # unrecognized symbols during syncconfig. Result: the build succeeds, the
-          # Image is produced, every structural check passes, and the kernel ships
-          # with zero SUSFS code compiled in while everything *labels* it as enabled.
-          # That shipped silently for an unknown number of releases. This step is the
-          # gate that should have existed from the start: check the real .config,
-          # not a label, not a filename, not a comment.
+          # unrecognized symbols during syncconfig. That can silently ship a build
+          # mislabeled with respect to what it actually contains.
           #
-          # PitchKernel: extended for the ReSukiSU-NoSUSFS matrix variant. The
-          # original incident this gate protects against was "labeled SUSFS but
-          # not really compiled in" -- the mirror-image bug is just as real for
-          # the no-SUSFS variant: "labeled NoSUSFS but SUSFS symbols leaked in
-          # anyway" (e.g. a bad merge that dropped the `-d KSU_SUSFS...` else
-          # branch in build.sh). Both directions are checked below, keyed off
-          # matrix.ksu_enable / matrix.susfs_enable rather than a single ksu
-          # boolean.
+          # PitchKernel: SUSFS variant removed entirely (ReSukiSU's current hook
+          # API has no available SUSFS source for this 4.19 non-GKI target -- see
+          # matrix comment above). This gate now only checks the mirror-image
+          # failure: that SUSFS symbols never leak into a build that should not
+          # have them, e.g. a bad merge that dropped a `-d KSU_SUSFS...` line in
+          # build.sh.
           if [ "${{ matrix.ksu_enable }}" != "true" ]; then
             echo "matrix.ksu_enable=false (variant: ${{ matrix.label }}) — no KSU/SUSFS expected, skipping verification."
             exit 0
@@ -846,70 +840,35 @@ jobs:
           # implicit for a gate whose whole purpose is not trusting labels.
           SUSFS_SYMS="CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_ENABLE_LOG CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG CONFIG_KSU_SUSFS_OPEN_REDIRECT CONFIG_KSU_SUSFS_SUS_MAP"
 
-          if [ "${{ matrix.susfs_enable }}" == "true" ]; then
-            echo "Checking $CONFIG_FILE for KSU and SUSFS symbols (variant: ${{ matrix.label }}, expect PRESENT)..."
-            MISSING=0
-            for SYM in CONFIG_KSU $SUSFS_SYMS; do
-              if grep -q "^${SYM}=y" "$CONFIG_FILE"; then
-                echo "  OK: ${SYM}=y"
-              else
-                echo "  MISSING: ${SYM} is not set to y in the generated .config"
-                MISSING=1
-              fi
-            done
-
-            SUSFS_HEADER="apasitu/include/linux/susfs.h"
-            if [ -f "$SUSFS_HEADER" ]; then
-              echo "  OK: $SUSFS_HEADER exists"
-            else
-              echo "  MISSING: $SUSFS_HEADER does not exist — susfs source was never added to the tree"
-              MISSING=1
-            fi
-
-            if [ "$MISSING" -eq 1 ]; then
-              echo ""
-              echo "FATAL: this variant expects SUSFS but it is not actually compiled in."
-              echo "Do not let this build ship as a 'SUSFS' release. Check apasitu/build.sh:"
-              echo "  - does the ksu-enabled branch clone a root provider whose tree includes susfs source?"
-              echo "  - if you changed the root provider (ReSukiSU/SukiSU/KernelSU/KernelSU-Next), the"
-              echo "    'scripts/config -e KSU_SUSFS ...' block only works if that provider bundles susfs"
-              echo "    OR you added an explicit susfs4ksu patch step before this build ran."
-              exit 1
-            fi
-
-            echo "SUSFS verification passed — real, not just labeled."
+          echo "Checking $CONFIG_FILE for KSU (expect PRESENT) and SUSFS symbols (variant: ${{ matrix.label }}, expect ABSENT)..."
+          BAD=0
+          if grep -q "^CONFIG_KSU=y" "$CONFIG_FILE"; then
+            echo "  OK: CONFIG_KSU=y"
           else
-            echo "Checking $CONFIG_FILE for KSU (expect PRESENT) and SUSFS symbols (variant: ${{ matrix.label }}, expect ABSENT)..."
-            BAD=0
-            if grep -q "^CONFIG_KSU=y" "$CONFIG_FILE"; then
-              echo "  OK: CONFIG_KSU=y"
-            else
-              echo "  MISSING: CONFIG_KSU is not set to y — this variant should still have KSU, just not SUSFS"
-              BAD=1
-            fi
-
-            for SYM in $SUSFS_SYMS; do
-              if grep -q "^${SYM}=y" "$CONFIG_FILE"; then
-                echo "  LEAKED: ${SYM}=y is set, but this is the ReSukiSU-only (NoSUSFS) variant"
-                BAD=1
-              else
-                echo "  OK: ${SYM} is not set to y"
-              fi
-            done
-
-            if [ "$BAD" -eq 1 ]; then
-              echo ""
-              echo "FATAL: this variant is labeled ReSukiSU-NoSUSFS but either KSU is missing or"
-              echo "SUSFS symbols leaked into the config anyway. Do not let this build ship as a"
-              echo "'NoSUSFS' release with SUSFS features actually present -- that is a false"
-              echo "security/behavior guarantee to end users flashing this variant specifically"
-              echo "to avoid SUSFS. Check the SUSFS_ENABLE branch in apasitu/build.sh (or"
-              echo "build-miui.sh) for a dropped '-d KSU_SUSFS...' else-branch."
-              exit 1
-            fi
-
-            echo "ReSukiSU-NoSUSFS verification passed — KSU present, SUSFS genuinely absent, not just unlabeled."
+            echo "  MISSING: CONFIG_KSU is not set to y — this variant should still have KSU, just not SUSFS"
+            BAD=1
           fi
+
+          for SYM in $SUSFS_SYMS; do
+            if grep -q "^${SYM}=y" "$CONFIG_FILE"; then
+              echo "  LEAKED: ${SYM}=y is set, but this is the ReSukiSU-only (NoSUSFS) variant"
+              BAD=1
+            else
+              echo "  OK: ${SYM} is not set to y"
+            fi
+          done
+
+          if [ "$BAD" -eq 1 ]; then
+            echo ""
+            echo "FATAL: this variant is labeled ReSukiSU-NoSUSFS but either KSU is missing or"
+            echo "SUSFS symbols leaked into the config anyway. Do not let this build ship as a"
+            echo "'NoSUSFS' release with SUSFS features actually present -- that is a false"
+            echo "security/behavior guarantee to end users flashing this variant specifically"
+            echo "to avoid SUSFS. Check apasitu/build.sh for a dropped '-d KSU_SUSFS...' line."
+            exit 1
+          fi
+
+          echo "ReSukiSU-NoSUSFS verification passed — KSU present, SUSFS genuinely absent, not just unlabeled."
 
       - name: Verify uclamp actually compiled in
         run: |
@@ -1082,7 +1041,7 @@ jobs:
         run: |
           DATE=$(date +%Y%m%d-%H%M)
           # PitchKernel: TYPE/ARTIFACT_LABEL now come straight from the matrix
-          # entry (matrix.zip_type: resukisu-susfs / resukisu-nosusfs / stock)
+          # entry (matrix.zip_type: resukisu-nosusfs / stock)
           # instead of being reconstructed from a single ksu boolean. This is
           # what actually keeps the two variants' artifacts/zips from colliding
           # under the same filename within one workflow run.
@@ -1203,12 +1162,11 @@ jobs:
           ZIP_PATH: ${{ github.workspace }}/${{ env.ZIP_NAME }}
           ZIP_NAME: ${{ env.ZIP_NAME }}
           KERNEL_VERSION: "4.19"
-          # PitchKernel: ROOT_SOLUTION now keys off matrix.ksu_enable/susfs_enable
-          # instead of a single inputs.ksu boolean, so the ReSukiSU-NoSUSFS
-          # variant gets its own RESUKISU_NOSUSFS case in telegram.sh instead of
-          # being indistinguishable from the full SUSFS build in Telegram output.
-          ROOT_SOLUTION: ${{ matrix.ksu_enable == 'true' && (matrix.susfs_enable == 'true' && env.ROOT_SOLUTION_KEY || 'RESUKISU_NOSUSFS') || 'VANILLA' }}
-          SUSFS_ENABLED: ${{ matrix.susfs_enable }}
+          # PitchKernel: ROOT_SOLUTION keys off matrix.ksu_enable only --
+          # SUSFS variant removed, so ksu_enable=true always means
+          # ReSukiSU-NoSUSFS now.
+          ROOT_SOLUTION: ${{ matrix.ksu_enable == 'true' && 'RESUKISU_NOSUSFS' || 'VANILLA' }}
+          SUSFS_ENABLED: "false"
           # Was hardcoded "default (apasitu)" — meant nothing and hid the exact
           # branch/commit mismatch bug fixed in the "Clone apasitu kernel source"
           # step above. Now reflects what was actually resolved and cloned this
@@ -1248,7 +1206,7 @@ jobs:
 
             ### Features
             - Root: ${{ matrix.ksu_enable == 'true' && env.ROOT_PROVIDER || 'none (vanilla, no root)' }}
-            - SUSFS: ${{ matrix.susfs_enable == 'true' && 'enabled' || (matrix.ksu_enable == 'true' && 'explicitly disabled — ReSukiSU only, no SUSFS features compiled in' || 'not applicable (no root)') }}
+            - SUSFS: ${{ matrix.ksu_enable == 'true' && 'not available — ReSukiSU only, no compatible SUSFS source for this 4.19 non-GKI target' || 'not applicable (no root)' }}
             - TCP BBR congestion control
             - ROM auto-detection: MIUI/HyperOS or AOSP
             - CPU prime core ceiling: 2841600 kHz (hardware-enforced by qcom-cpufreq-hw driver)
