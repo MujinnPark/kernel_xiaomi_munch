@@ -163,10 +163,16 @@ jobs:
             echo "::warning::source_branch_override set — building '${KERNEL_SOURCE_BRANCH}' instead of the pinned main branch"
           fi
           echo "Cloning branch: ${KERNEL_SOURCE_BRANCH} (pinned explicitly — see step comment)"
-          git clone --depth=1 --single-branch -b "${KERNEL_SOURCE_BRANCH}" \
+          git clone --depth=1 --single-branch --recurse-submodules -b "${KERNEL_SOURCE_BRANCH}" \
             https://github.com/MujinnPark/pitch_kernel_sm8250.git \
             apasitu
           ls apasitu/build.sh apasitu/build-miui.sh
+          echo "--- Verifying KernelSU submodule was actually populated (not left empty) ---"
+          if [ ! -f apasitu/KernelSU/kernel/Kconfig ]; then
+            echo "::error::apasitu/KernelSU/kernel/Kconfig missing -- submodule did not clone. Check --recurse-submodules and .gitmodules."
+            exit 1
+          fi
+          echo "OK: KernelSU submodule populated."
           RESOLVED_SHA=$(git -C apasitu rev-parse --short HEAD)
           echo "KERNEL_SOURCE_BRANCH=${KERNEL_SOURCE_BRANCH}" >> $GITHUB_ENV
           echo "KERNEL_SOURCE_SHA=${RESOLVED_SHA}" >> $GITHUB_ENV
