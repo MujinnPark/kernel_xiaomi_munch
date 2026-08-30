@@ -167,37 +167,49 @@ jobs:
           # pin above if you actually want to permanently track a different
           # branch.
           KERNEL_SOURCE_BRANCH: ${{ inputs.source_branch_override != '' && inputs.source_branch_override || 'main' }}
+          # PitchKernel: pitch_kernel_sm8250 is private -- see the clone
+          # command below for why this secret is required and what scope
+          # it needs. Passed through env: (not referenced directly in the
+          # run: script via ${{ }}) so its value never appears verbatim in
+          # the rendered/logged step command, only as a shell variable
+          # expansion at execution time.
+          PITCHKERNEL_REPO_PAT: ${{ secrets.PITCHKERNEL_REPO_PAT }}
         run: |
           if [ -n "${{ inputs.source_branch_override }}" ]; then
             echo "::warning::source_branch_override set — building '${KERNEL_SOURCE_BRANCH}' instead of the pinned main branch"
           fi
           echo "Cloning branch: ${KERNEL_SOURCE_BRANCH} (pinned explicitly — see step comment)"
-          # PitchKernel: this clone runs from inside kernel_xiaomi_munch's
-          # own checked-out working directory (GHA's default cwd for a
-          # run: step), which actions/checkout@v4's persist-credentials
-          # has set a --local http.https://github.com/.extraheader on
-          # (confirmed in the Checkout step's log -- git config --local,
-          # not --global). Adding --recurse-submodules below is what
-          # surfaced this: run 90266761349 failed immediately at "Cloning
-          # into 'apasitu'..." with "fatal: could not read Username for
-          # 'https://github.com': No such device or address" -- the exact
-          # symptom of a non-interactive git hitting a credential prompt
-          # it can't answer. The precise mechanism by which a --local
-          # extraheader set on the ambient cwd's repo affects a brand-new
-          # `git clone` into a different subdirectory (apasitu is not
-          # itself a git repo yet at the point this runs) is not fully
-          # pinned down, but the fix used by every real-world report of
-          # this exact error (actions/runner#3051, several GitLab CI
-          # threads) is the same: explicitly clear the relevant config for
-          # this one command via -c, and disable the interactive-prompt
-          # fallback so any future auth requirement fails fast and
-          # legibly instead of hanging or emitting this cryptic message.
-          # Does not touch persist-credentials on the checkout step
-          # itself (step 2), which still needs it for anything later in
-          # the job that pushes back to this repo.
-          GIT_TERMINAL_PROMPT=0 git -c http.https://github.com/.extraheader= -c credential.helper= \
-            clone --depth=1 --single-branch --recurse-submodules -b "${KERNEL_SOURCE_BRANCH}" \
-            https://github.com/MujinnPark/pitch_kernel_sm8250.git \
+          # PitchKernel: pitch_kernel_sm8250 is a PRIVATE repo. The earlier
+          # fix here (clearing http.extraheader / credential.helper,
+          # GIT_TERMINAL_PROMPT=0) was based on a wrong diagnosis -- it
+          # assumed a *leaked* credential header was the problem, when in
+          # fact this clone had never been authenticated at all and always
+          # needed to be. That fix only made the failure mode legible
+          # ("terminal prompts disabled" instead of the more opaque
+          # original message); it could never have made the clone
+          # succeed, because there was no valid credential to clear in the
+          # first place -- confirmed by reproducing the identical failure
+          # with a bare, non-CI `git clone` of this exact URL outside any
+          # GitHub Actions context at all.
+          #
+          # PITCHKERNEL_REPO_PAT must be a Personal Access Token
+          # (classic or fine-grained, contents:read is sufficient) with
+          # read access to MujinnPark/pitch_kernel_sm8250, stored as a
+          # secret in kernel_xiaomi_munch specifically. secrets.GITHUB_TOKEN
+          # (used elsewhere in this file for the release step) is scoped
+          # only to this repo (kernel_xiaomi_munch) and cannot read a
+          # different private repo, even one owned by the same account --
+          # it will not work here even though it's already available.
+          if [ -z "${PITCHKERNEL_REPO_PAT}" ]; then
+            echo "::error::PITCHKERNEL_REPO_PAT secret is not set. pitch_kernel_sm8250 is"
+            echo "::error::private and cannot be cloned without it -- add a PAT with read"
+            echo "::error::access to that repo as a secret named PITCHKERNEL_REPO_PAT in"
+            echo "::error::kernel_xiaomi_munch's repo settings."
+            exit 1
+          fi
+          git clone --depth=1 --single-branch --recurse-submodules -b "${KERNEL_SOURCE_BRANCH}" \
+            "https://x-access-token:${PITCHKERNEL_REPO_PAT}@github.com/MujinnPark/pitch_kernel_sm8250.git" \
+            apasitu
             apasitu
           ls apasitu/build.sh apasitu/build-miui.sh
           echo "--- Verifying KernelSU submodule was actually populated (not left empty) ---"
