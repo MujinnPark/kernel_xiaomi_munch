@@ -172,7 +172,31 @@ jobs:
             echo "::warning::source_branch_override set — building '${KERNEL_SOURCE_BRANCH}' instead of the pinned main branch"
           fi
           echo "Cloning branch: ${KERNEL_SOURCE_BRANCH} (pinned explicitly — see step comment)"
-          git clone --depth=1 --single-branch --recurse-submodules -b "${KERNEL_SOURCE_BRANCH}" \
+          # PitchKernel: this clone runs from inside kernel_xiaomi_munch's
+          # own checked-out working directory (GHA's default cwd for a
+          # run: step), which actions/checkout@v4's persist-credentials
+          # has set a --local http.https://github.com/.extraheader on
+          # (confirmed in the Checkout step's log -- git config --local,
+          # not --global). Adding --recurse-submodules below is what
+          # surfaced this: run 90266761349 failed immediately at "Cloning
+          # into 'apasitu'..." with "fatal: could not read Username for
+          # 'https://github.com': No such device or address" -- the exact
+          # symptom of a non-interactive git hitting a credential prompt
+          # it can't answer. The precise mechanism by which a --local
+          # extraheader set on the ambient cwd's repo affects a brand-new
+          # `git clone` into a different subdirectory (apasitu is not
+          # itself a git repo yet at the point this runs) is not fully
+          # pinned down, but the fix used by every real-world report of
+          # this exact error (actions/runner#3051, several GitLab CI
+          # threads) is the same: explicitly clear the relevant config for
+          # this one command via -c, and disable the interactive-prompt
+          # fallback so any future auth requirement fails fast and
+          # legibly instead of hanging or emitting this cryptic message.
+          # Does not touch persist-credentials on the checkout step
+          # itself (step 2), which still needs it for anything later in
+          # the job that pushes back to this repo.
+          GIT_TERMINAL_PROMPT=0 git -c http.https://github.com/.extraheader= -c credential.helper= \
+            clone --depth=1 --single-branch --recurse-submodules -b "${KERNEL_SOURCE_BRANCH}" \
             https://github.com/MujinnPark/pitch_kernel_sm8250.git \
             apasitu
           ls apasitu/build.sh apasitu/build-miui.sh
