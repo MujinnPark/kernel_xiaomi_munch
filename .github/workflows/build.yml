@@ -12,12 +12,14 @@ on:
           - build.sh
       variants:
         # NOTE: this description is a static string — GitHub Actions evaluates
-        # workflow_dispatch.inputs at trigger-definition time, before any job
-        # env exists, so it CANNOT reference env.ROOT_PROVIDER below. If the
-        # root provider changes again, this line must be edited by hand.
-        # That is exactly the kind of manual, easy-to-forget step that caused
-        # this repo to say "KernelSU Next" in five places after switching
-        # back to ReSukiSU. Don't forget this one too.
+        # workflow_dispatch.inputs at trigger-definition time, before the
+        # matrix even exists, so it cannot reference matrix.root_provider
+        # below. Root providers are now set per matrix entry (see
+        # matrix.include further down) rather than as a job-level env var,
+        # specifically so adding one doesn't require touching this comment
+        # or any label elsewhere in the file by hand -- that manual-edit
+        # requirement is exactly what caused this repo to say "KernelSU
+        # Next" in five places after switching back to ReSukiSU.
         #
         # PitchKernel: replaces the old `ksu` boolean (true/false = root/no-root).
         # That boolean never had a concept of "ReSukiSU without SUSFS" -- SUSFS
@@ -31,6 +33,7 @@ on:
         default: 'nosusfs-only'
         options:
           - 'nosusfs-only'
+          - 'kernelsu-only'
           - 'vanilla-only'
       skip_ccache:
         description: 'DIAGNOSTIC: skip restoring ccache for this run (forces a full rebuild, use to rule out stale-cache issues)'
@@ -68,21 +71,27 @@ jobs:
       # the vendored SUSFS 2.2.0 tree and susfs4ksu's kernel-4.19 branch.
       # susfs_enable is gone from every matrix entry; ksu_enable (ReSukiSU,
       # no SUSFS) and the vanilla no-root build remain.
+      #
+      # PitchKernel: added a third root provider, plain KernelSU (EmanuelCN
+      # fork, vendored as a submodule at KernelSU/ in the kernel repo --
+      # see pitch_kernel_sm8250's .gitmodules). Each matrix entry now
+      # carries its own root_arg (literal apasitu/build.sh positional args),
+      # root_provider (human-readable) and root_solution_key (machine key
+      # matching a telegram.sh case) instead of relying on the old
+      # job-level ROOT_PROVIDER/ROOT_SOLUTION_KEY env vars -- those cannot
+      # hold two different values for two different root-providing matrix
+      # entries in the same run, which this change now requires. ksu_enable
+      # is kept as a simple "is any root provider active" boolean so the
+      # existing matrix.ksu_enable checks elsewhere in this file (SUSFS
+      # verification gate, uclamp gate) keep working unchanged for both
+      # root variants.
       fail-fast: false
       matrix:
-        include: ${{ fromJSON( inputs.variants == 'vanilla-only' && '[{"label":"Vanilla-NoRoot","ksu_enable":"false","zip_type":"stock"}]' || '[{"label":"ReSukiSU-NoSUSFS","ksu_enable":"true","zip_type":"resukisu-nosusfs"}]' ) }}
-    env:
-      # SINGLE SOURCE OF TRUTH for which root provider this pipeline builds.
-      # Every label below (Telegram start message, artifact/zip name, telegram.sh
-      # caption, GitHub release body) reads from these two variables instead of
-      # hardcoding the provider name separately in each spot. This exists because
-      # a prior revert (KernelSU-Next -> ReSukiSU) fixed apasitu/build.sh but left
-      # five independent hardcoded "KernelSU Next" strings scattered across this
-      # file, and every one of them silently kept lying after the code was fixed.
-      # If the root provider ever changes again: change these two lines, nothing
-      # else in this file should need to be touched.
-      ROOT_PROVIDER: ReSukiSU        # human-readable, used in messages/labels
-      ROOT_SOLUTION_KEY: RESUKISU    # machine key, must match a case in telegram.sh
+        include: ${{ fromJSON(
+          inputs.variants == 'vanilla-only' && '[{"label":"Vanilla-NoRoot","ksu_enable":"false","root_arg":"","root_provider":"none","root_solution_key":"VANILLA","zip_type":"stock"}]' ||
+          inputs.variants == 'kernelsu-only' && '[{"label":"KernelSU","ksu_enable":"true","root_arg":"kernelsu","root_provider":"KernelSU (EmanuelCN)","root_solution_key":"KERNELSU","zip_type":"kernelsu"}]' ||
+          '[{"label":"ReSukiSU-NoSUSFS","ksu_enable":"true","root_arg":"ksu nosusfs","root_provider":"ReSukiSU","root_solution_key":"RESUKISU_NOSUSFS","zip_type":"resukisu-nosusfs"}]'
+          ) }}
 
     steps:
       - name: Checkout PitchKernel repo
@@ -505,16 +514,13 @@ jobs:
           LOG="/tmp/pitchkernel-build-step.log"
 
           set +e
-          # PitchKernel: matrix.ksu_enable drives build.sh's positional args
-          # here. SUSFS variant removed -- ksu_enable=true always means
-          # ReSukiSU without SUSFS (build.sh's "nosusfs" third arg), since no
-          # SUSFS source available for this 4.19 non-GKI target actually
-          # satisfies ReSukiSU's current hook API (see matrix comment above).
-          if [ "${{ matrix.ksu_enable }}" == "true" ]; then
-            bash ${{ inputs.script }} munch ksu nosusfs > "$LOG" 2>&1
-          else
-            bash ${{ inputs.script }} munch > "$LOG" 2>&1
-          fi
+          # PitchKernel: matrix.root_arg carries the literal apasitu/build.sh
+          # positional args for this variant (see matrix.include above) --
+          # "" for vanilla, "ksu nosusfs" for ReSukiSU, "kernelsu" for plain
+          # KernelSU. Replaces the old two-way ksu_enable branch, which had
+          # no way to express a third root provider without another
+          # hardcoded if/else here.
+          bash ${{ inputs.script }} munch ${{ matrix.root_arg }} > "$LOG" 2>&1
           BUILD_EXIT=$?
           set -e
 
@@ -857,7 +863,7 @@ jobs:
 
           for SYM in $SUSFS_SYMS; do
             if grep -q "^${SYM}=y" "$CONFIG_FILE"; then
-              echo "  LEAKED: ${SYM}=y is set, but this is the ReSukiSU-only (NoSUSFS) variant"
+              echo "  LEAKED: ${SYM}=y is set, but variant '${{ matrix.label }}' should not have SUSFS"
               BAD=1
             else
               echo "  OK: ${SYM} is not set to y"
@@ -866,15 +872,15 @@ jobs:
 
           if [ "$BAD" -eq 1 ]; then
             echo ""
-            echo "FATAL: this variant is labeled ReSukiSU-NoSUSFS but either KSU is missing or"
-            echo "SUSFS symbols leaked into the config anyway. Do not let this build ship as a"
-            echo "'NoSUSFS' release with SUSFS features actually present -- that is a false"
-            echo "security/behavior guarantee to end users flashing this variant specifically"
-            echo "to avoid SUSFS. Check apasitu/build.sh for a dropped '-d KSU_SUSFS...' line."
+            echo "FATAL: variant '${{ matrix.label }}' is labeled as having no SUSFS, but either"
+            echo "KSU is missing or SUSFS symbols leaked into the config anyway. Do not let this"
+            echo "build ship claiming no SUSFS with SUSFS features actually present -- that is a"
+            echo "false security/behavior guarantee to end users. Check apasitu/build.sh for a"
+            echo "dropped '-d KSU_SUSFS...' line."
             exit 1
           fi
 
-          echo "ReSukiSU-NoSUSFS verification passed — KSU present, SUSFS genuinely absent, not just unlabeled."
+          echo "'${{ matrix.label }}' verification passed — KSU present, SUSFS genuinely absent, not just unlabeled."
 
       - name: Verify uclamp actually compiled in
         run: |
@@ -1168,10 +1174,13 @@ jobs:
           ZIP_PATH: ${{ github.workspace }}/${{ env.ZIP_NAME }}
           ZIP_NAME: ${{ env.ZIP_NAME }}
           KERNEL_VERSION: "4.19"
-          # PitchKernel: ROOT_SOLUTION keys off matrix.ksu_enable only --
-          # SUSFS variant removed, so ksu_enable=true always means
-          # ReSukiSU-NoSUSFS now.
-          ROOT_SOLUTION: ${{ matrix.ksu_enable == 'true' && 'RESUKISU_NOSUSFS' || 'VANILLA' }}
+          # PitchKernel: reads matrix.root_solution_key directly now that a
+          # third root provider (KernelSU) exists -- the old two-way ternary
+          # here (ksu_enable == 'true' -> RESUKISU_NOSUSFS) predates that and
+          # would have mislabeled a KernelSU build as ReSukiSU. Each matrix
+          # entry sets its own root_solution_key (see matrix.include above),
+          # matching a case in telegram.sh's ROOT_DISPLAY switch.
+          ROOT_SOLUTION: ${{ matrix.root_solution_key }}
           SUSFS_ENABLED: "false"
           # Was hardcoded "default (apasitu)" — meant nothing and hid the exact
           # branch/commit mismatch bug fixed in the "Clone apasitu kernel source"
@@ -1211,8 +1220,8 @@ jobs:
             **Toolchain:** ZyCromerZ Clang 16.0.6-20260807
 
             ### Features
-            - Root: ${{ matrix.ksu_enable == 'true' && env.ROOT_PROVIDER || 'none (vanilla, no root)' }}
-            - SUSFS: ${{ matrix.ksu_enable == 'true' && 'not available — ReSukiSU only, no compatible SUSFS source for this 4.19 non-GKI target' || 'not applicable (no root)' }}
+            - Root: ${{ matrix.root_provider == 'none' && 'none (vanilla, no root)' || matrix.root_provider }}
+            - SUSFS: ${{ matrix.root_solution_key == 'RESUKISU_NOSUSFS' && 'not available — ReSukiSU only, no compatible SUSFS source for this 4.19 non-GKI target' || (matrix.root_solution_key == 'KERNELSU' && 'not supported by this root provider (plain KernelSU has no SUSFS integration)' || 'not applicable (no root)') }}
             - TCP BBR congestion control
             - ROM auto-detection: MIUI/HyperOS or AOSP
             - CPU prime core ceiling: 2841600 kHz (hardware-enforced by qcom-cpufreq-hw driver)
