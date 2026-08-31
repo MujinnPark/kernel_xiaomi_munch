@@ -51,6 +51,7 @@ case "${ROOT_SOLUTION:-VANILLA}" in
     KSU_NEXT)          ROOT_DISPLAY="KernelSU-Next" ;;
     RESUKISU)          ROOT_DISPLAY="ReSukiSU" ;;
     RESUKISU_NOSUSFS)  ROOT_DISPLAY="ReSukiSU" ;;
+    KERNELSU_NEXT)     ROOT_DISPLAY="KernelSU-Next" ;;
     KERNELSU)          ROOT_DISPLAY="KernelSU" ;;
     SUKISU)            ROOT_DISPLAY="SukiSU"   ;;
     VANILLA)           ROOT_DISPLAY="Vanilla"  ;;
