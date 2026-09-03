@@ -33,7 +33,6 @@ on:
         default: 'nosusfs-only'
         options:
           - 'nosusfs-only'
-          - 'kernelsu-only'
           - 'vanilla-only'
       skip_ccache:
         description: 'DIAGNOSTIC: skip restoring ccache for this run (forces a full rebuild, use to rule out stale-cache issues)'
@@ -72,24 +71,20 @@ jobs:
       # susfs_enable is gone from every matrix entry; ksu_enable (ReSukiSU,
       # no SUSFS) and the vanilla no-root build remain.
       #
-      # PitchKernel: added a third root provider, plain KernelSU (EmanuelCN
-      # fork, vendored as a submodule at KernelSU/ in the kernel repo --
-      # see pitch_kernel_sm8250's .gitmodules). Each matrix entry now
-      # carries its own root_arg (literal apasitu/build.sh positional args),
-      # root_provider (human-readable) and root_solution_key (machine key
-      # matching a telegram.sh case) instead of relying on the old
-      # job-level ROOT_PROVIDER/ROOT_SOLUTION_KEY env vars -- those cannot
-      # hold two different values for two different root-providing matrix
-      # entries in the same run, which this change now requires. ksu_enable
-      # is kept as a simple "is any root provider active" boolean so the
-      # existing matrix.ksu_enable checks elsewhere in this file (SUSFS
-      # verification gate, uclamp gate) keep working unchanged for both
-      # root variants.
+      # Each matrix entry carries its own root_arg (literal apasitu/
+      # build.sh positional args), root_provider (human-readable) and
+      # root_solution_key (machine key matching a telegram.sh case)
+      # instead of a job-level ROOT_PROVIDER/ROOT_SOLUTION_KEY env var --
+      # keeps this file correct if a third root provider is ever added
+      # again without needing a job-level constant that can't hold two
+      # different values for two different root-providing matrix entries
+      # in the same run. ksu_enable is kept as a simple "is any root
+      # provider active" boolean so matrix.ksu_enable checks elsewhere in
+      # this file (SUSFS verification gate, uclamp gate) stay unchanged.
       fail-fast: false
       matrix:
         include: ${{ fromJSON(
           inputs.variants == 'vanilla-only' && '[{"label":"Vanilla-NoRoot","ksu_enable":"false","root_arg":"","root_provider":"none","root_solution_key":"VANILLA","zip_type":"stock"}]' ||
-          inputs.variants == 'kernelsu-only' && '[{"label":"KernelSU-Next","ksu_enable":"true","root_arg":"kernelsu","root_provider":"KernelSU-Next","root_solution_key":"KERNELSU_NEXT","zip_type":"kernelsu-next"}]' ||
           '[{"label":"ReSukiSU-NoSUSFS","ksu_enable":"true","root_arg":"ksu nosusfs","root_provider":"ReSukiSU","root_solution_key":"RESUKISU_NOSUSFS","zip_type":"resukisu-nosusfs"}]'
           ) }}
 
@@ -1256,7 +1251,7 @@ jobs:
 
             ### Features
             - Root: ${{ matrix.root_provider == 'none' && 'none (vanilla, no root)' || matrix.root_provider }}
-            - SUSFS: ${{ matrix.root_solution_key == 'RESUKISU_NOSUSFS' && 'not available — ReSukiSU only, no compatible SUSFS source for this 4.19 non-GKI target' || (matrix.root_solution_key == 'KERNELSU_NEXT' && 'not supported by this root provider (KernelSU-Next legacy/manual-hook mode has no SUSFS integration)' || 'not applicable (no root)') }}
+            - SUSFS: ${{ matrix.root_solution_key == 'RESUKISU_NOSUSFS' && 'not available — ReSukiSU only, no compatible SUSFS source for this 4.19 non-GKI target' || 'not applicable (no root)' }}
             - TCP BBR congestion control
             - ROM auto-detection: MIUI/HyperOS or AOSP
             - CPU prime core ceiling: 2841600 kHz (hardware-enforced by qcom-cpufreq-hw driver)
