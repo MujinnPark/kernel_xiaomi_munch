@@ -34,7 +34,6 @@ on:
         options:
           - 'nosusfs-only'
           - 'vanilla-only'
-          - 'sukisu-builtin-experimental'
       skip_ccache:
         description: 'DIAGNOSTIC: skip restoring ccache for this run (forces a full rebuild, use to rule out stale-cache issues)'
         required: false
@@ -86,7 +85,6 @@ jobs:
       matrix:
         include: ${{ fromJSON(
           inputs.variants == 'vanilla-only' && '[{"label":"Vanilla-NoRoot","ksu_enable":"false","root_arg":"","root_provider":"none","root_solution_key":"VANILLA","zip_type":"stock"}]' ||
-          inputs.variants == 'sukisu-builtin-experimental' && '[{"label":"SukiSUUltraBuiltin-EXPERIMENTAL","ksu_enable":"true","root_arg":"sukisu-builtin","root_provider":"SukiSU-Ultra (builtin, EXPERIMENTAL)","root_solution_key":"SUKISU_ULTRA_BUILTIN_EXPERIMENTAL","zip_type":"sukisu-builtin-experimental"}]' ||
           '[{"label":"ReSukiSU-NoSUSFS","ksu_enable":"true","root_arg":"ksu nosusfs","root_provider":"ReSukiSU","root_solution_key":"RESUKISU_NOSUSFS","zip_type":"resukisu-nosusfs"}]'
           ) }}
 
@@ -1247,19 +1245,10 @@ jobs:
 
             ### Features
             - Root: ${{ matrix.root_provider == 'none' && 'none (vanilla, no root)' || matrix.root_provider }}
-            - SUSFS: ${{ matrix.root_solution_key == 'RESUKISU_NOSUSFS' && 'not available — ReSukiSU only, no compatible SUSFS source for this 4.19 non-GKI target' || (matrix.root_solution_key == 'SUKISU_ULTRA_BUILTIN_EXPERIMENTAL' && 'UNVERIFIED — no SUSFS Kconfig symbols set by this pipeline; status of any SUSFS support in SukiSU-Ultra builtin source itself is untested' || 'not applicable (no root)') }}
+            - SUSFS: ${{ matrix.root_solution_key == 'RESUKISU_NOSUSFS' && 'not available — ReSukiSU only, no compatible SUSFS source for this 4.19 non-GKI target' || 'not applicable (no root)' }}
             - TCP BBR congestion control
             - ROM auto-detection: MIUI/HyperOS or AOSP
             - CPU prime core ceiling: 2841600 kHz (hardware-enforced by qcom-cpufreq-hw driver)
-            ${{ matrix.root_solution_key == 'SUKISU_ULTRA_BUILTIN_EXPERIMENTAL' && '
-            ### ⚠️ EXPERIMENTAL — READ BEFORE FLASHING
-            This variant has never been confirmed to boot. SukiSU-Ultra''s `builtin` branch has
-            no known production deployment on any 4.19 non-GKI kernel — every real-world use
-            found during development was on GKI 6.x devices. Hook-site compatibility with this
-            trees manual-hook wiring (fs/exec.c, fs/open.c, fs/stat.c, kernel/reboot.c) is
-            UNCONFIRMED. A green CI build here means "compiled without error," not "boots" or
-            "root works." Keep a fastboot-flashable stock boot image ready before trying this.
-            ' || '' }}
 
             ### Installation
             Flash via OrangeFox or TWRP.
@@ -1268,5 +1257,5 @@ jobs:
           files: ${{ env.ZIP_NAME }}
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: false
-          prerelease: ${{ matrix.root_solution_key == 'SUKISU_ULTRA_BUILTIN_EXPERIMENTAL' }}
+          prerelease: false
           
