@@ -33,6 +33,7 @@ on:
         default: 'nosusfs-only'
         options:
           - 'nosusfs-only'
+          - 'susfs-only'
           - 'vanilla-only'
       skip_ccache:
         description: 'DIAGNOSTIC: skip restoring ccache for this run (forces a full rebuild, use to rule out stale-cache issues)'
@@ -62,14 +63,22 @@ jobs:
       # variant's otherwise-healthy build -- each variant ships or fails on
       # its own merit, as required.
       #
-      # SUSFS variant removed (see commit that removed it): ReSukiSU's main
-      # branch hook code (kernel/hook/setuid_hook.c, kernel/feature/
-      # sucompat.c) calls a susfs_*no_su*/susfs_set_sdcard_android_data_
-      # decrypted_key_false API family that no SUSFS source available for
-      # this 4.19 non-GKI target actually defines -- confirmed against both
-      # the vendored SUSFS 2.2.0 tree and susfs4ksu's kernel-4.19 branch.
-      # susfs_enable is gone from every matrix entry; ksu_enable (ReSukiSU,
-      # no SUSFS) and the vanilla no-root build remain.
+      # SUSFS variant restored: the underlying blocker (ReSukiSU's main
+      # branch hook code, kernel/hook/setuid_hook.c, calling
+      # susfs_is/set/clear_current_proc_no_su and
+      # susfs_set_current_proc_umounted_for_zygote_next, none of which
+      # existed in this tree's vendored SUSFS source) is fixed in
+      # include/linux/susfs_def.h -- see that commit. Symbols were ported
+      # from AstideLabs/android_kernel_xiaomi_sm8250 (android17-aptusitu),
+      # which pairs the same ReSukiSU integration successfully for
+      # munch/sm8250 and reports SUSFS_VERSION v2.3.0 in its fs/susfs.c.
+      # susfs4ksu's public kernel-4.19 GitLab branch does NOT have these
+      # symbols (confirmed directly, HEAD frozen at 001e6996, 2025-02-23)
+      # -- AstideLabs' source is not the same as that public branch, so do
+      # not re-derive "SUSFS is impossible here" from checking susfs4ksu
+      # alone again in the future.
+      # susfs_enable is back on every matrix entry: true only for the new
+      # susfs-only variant, false for the other two.
       #
       # Each matrix entry carries its own root_arg (literal apasitu/
       # build.sh positional args), root_provider (human-readable) and
@@ -84,8 +93,9 @@ jobs:
       fail-fast: false
       matrix:
         include: ${{ fromJSON(
-          inputs.variants == 'vanilla-only' && '[{"label":"Vanilla-NoRoot","ksu_enable":"false","root_arg":"","root_provider":"none","root_solution_key":"VANILLA","zip_type":"stock"}]' ||
-          '[{"label":"ReSukiSU-NoSUSFS","ksu_enable":"true","root_arg":"ksu nosusfs","root_provider":"ReSukiSU","root_solution_key":"RESUKISU_NOSUSFS","zip_type":"resukisu-nosusfs"}]'
+          inputs.variants == 'vanilla-only' && '[{"label":"Vanilla-NoRoot","ksu_enable":"false","susfs_enable":"false","root_arg":"","root_provider":"none","root_solution_key":"VANILLA","zip_type":"stock"}]' ||
+          inputs.variants == 'susfs-only' && '[{"label":"ReSukiSU-SUSFS","ksu_enable":"true","susfs_enable":"true","root_arg":"ksu","root_provider":"ReSukiSU","root_solution_key":"RESUKISU_SUSFS","zip_type":"resukisu-susfs"}]' ||
+          '[{"label":"ReSukiSU-NoSUSFS","ksu_enable":"true","susfs_enable":"false","root_arg":"ksu nosusfs","root_provider":"ReSukiSU","root_solution_key":"RESUKISU_NOSUSFS","zip_type":"resukisu-nosusfs"}]'
           ) }}
 
     steps:
@@ -851,12 +861,12 @@ jobs:
           # unrecognized symbols during syncconfig. That can silently ship a build
           # mislabeled with respect to what it actually contains.
           #
-          # PitchKernel: SUSFS variant removed entirely (ReSukiSU's current hook
-          # API has no available SUSFS source for this 4.19 non-GKI target -- see
-          # matrix comment above). This gate now only checks the mirror-image
-          # failure: that SUSFS symbols never leak into a build that should not
-          # have them, e.g. a bad merge that dropped a `-d KSU_SUSFS...` line in
-          # build.sh.
+          # PitchKernel: SUSFS variant restored after fixing the underlying
+          # no_su symbol gap in include/linux/susfs_def.h (see that commit
+          # for the full story). This gate is now variant-aware via
+          # matrix.susfs_enable: it checks SUSFS symbols are PRESENT for the
+          # susfs-only variant and ABSENT for every other KSU-enabled
+          # variant, instead of assuming SUSFS should always be absent.
           if [ "${{ matrix.ksu_enable }}" != "true" ]; then
             echo "matrix.ksu_enable=false (variant: ${{ matrix.label }}) — no KSU/SUSFS expected, skipping verification."
             exit 0
@@ -875,6 +885,37 @@ jobs:
           # correctly" as an unverified assumption. Explicit is better than
           # implicit for a gate whose whole purpose is not trusting labels.
           SUSFS_SYMS="CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_ENABLE_LOG CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG CONFIG_KSU_SUSFS_OPEN_REDIRECT CONFIG_KSU_SUSFS_SUS_MAP"
+
+          if [ "${{ matrix.susfs_enable }}" == "true" ]; then
+            echo "Checking $CONFIG_FILE for KSU and SUSFS symbols (variant: ${{ matrix.label }}, expect PRESENT)..."
+            BAD=0
+            if grep -q "^CONFIG_KSU=y" "$CONFIG_FILE"; then
+              echo "  OK: CONFIG_KSU=y"
+            else
+              echo "  MISSING: CONFIG_KSU is not set to y"
+              BAD=1
+            fi
+
+            for SYM in $SUSFS_SYMS; do
+              if grep -q "^${SYM}=y" "$CONFIG_FILE"; then
+                echo "  OK: ${SYM}=y"
+              else
+                echo "  MISSING: ${SYM} is not set to y, but variant '${{ matrix.label }}' should have SUSFS"
+                BAD=1
+              fi
+            done
+
+            if [ "$BAD" -eq 1 ]; then
+              echo ""
+              echo "FATAL: variant '${{ matrix.label }}' is labeled as having SUSFS, but either"
+              echo "KSU is missing or a required SUSFS symbol did not compile in. Do not ship this"
+              echo "build under a SUSFS label if this check fails."
+              exit 1
+            fi
+            echo ""
+            echo "SUSFS presence check passed."
+            exit 0
+          fi
 
           echo "Checking $CONFIG_FILE for KSU (expect PRESENT) and SUSFS symbols (variant: ${{ matrix.label }}, expect ABSENT)..."
           BAD=0
