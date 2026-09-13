@@ -1286,7 +1286,7 @@ jobs:
 
             ### Features
             - Root: ${{ matrix.root_provider == 'none' && 'none (vanilla, no root)' || matrix.root_provider }}
-            - SUSFS: ${{ matrix.root_solution_key == 'RESUKISU_NOSUSFS' && 'not available — ReSukiSU only, no compatible SUSFS source for this 4.19 non-GKI target' || 'not applicable (no root)' }}
+            - SUSFS: ${{ matrix.root_solution_key == 'RESUKISU_SUSFS' && format('v2.3.0 (ReSukiSU inline hook, {0})', env.KERNEL_SOURCE_SHA) || matrix.root_solution_key == 'RESUKISU_NOSUSFS' && 'not enabled for this build (ReSukiSU only) -- see the susfs-only variant for a SUSFS-enabled build' || 'not applicable (no root)' }}
             - TCP BBR congestion control
             - ROM auto-detection: MIUI/HyperOS or AOSP
             - CPU prime core ceiling: 2841600 kHz (hardware-enforced by qcom-cpufreq-hw driver)
