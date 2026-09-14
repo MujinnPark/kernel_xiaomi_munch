@@ -215,6 +215,10 @@ jobs:
           git clone --depth=1 --single-branch -b "${KERNEL_SOURCE_BRANCH}" \
             "https://x-access-token:${PITCHKERNEL_REPO_PAT}@github.com/MujinnPark/pitch_kernel_sm8250.git" \
             apasitu
+          echo "--- Initializing submodules (KernelSU/ReSukiSU) ---"
+          git -C apasitu submodule update --init --recursive
+          echo "--- Verifying ReSukiSU submodule populated ---"
+          test -f apasitu/KernelSU/kernel/runtime/ksud_integration.c && echo "OK: ksud_integration.c present" || echo "MISSING: submodule did not populate correctly"
           ls apasitu/build.sh apasitu/build-miui.sh
           RESOLVED_SHA=$(git -C apasitu rev-parse --short HEAD)
           echo "KERNEL_SOURCE_BRANCH=${KERNEL_SOURCE_BRANCH}" >> $GITHUB_ENV
