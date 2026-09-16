@@ -5,19 +5,12 @@
 # Adapted from LuminaireProtocol/telegram.sh
 # Source this script after build; requires env vars:
 #   ZIP_PATH, ZIP_NAME, KERNEL_VERSION
-#   ROOT_SOLUTION (RESUKISU|RESUKISU_NOSUSFS|KSU_NEXT|SUKISU|VANILLA) — driven
+#   ROOT_SOLUTION (RESUKISU|KSU_NEXT|SUKISU|VANILLA) — driven
 #     by build.yml's matrix.zip_type. History: shipped as RESUKISU, briefly
 #     and incorrectly switched to KSU_NEXT without a working susfs patch step
-#     (see build.yml comments), reverted back to RESUKISU. RESUKISU_NOSUSFS
-#     added for the ReSukiSU-only (no SUSFS) matrix variant -- this case
+#     (see build.yml comments), reverted back to RESUKISU. This case
 #     statement supports all values so it doesn't need touching again if
 #     the provider changes — only build.yml's env block should need editing.
-#   SUSFS_ENABLED (true|false) — reflects matrix.susfs_enable directly, i.e.
-#     whether this specific variant's build.sh invocation passed "nosusfs".
-#     Still does not independently re-verify susfs.h presence beyond the
-#     check below -- that verification lives in build.yml's
-#     "Verify SUSFS actually compiled in (or actually excluded)" gate, which
-#     runs before this script and fails the job first if the label would lie.
 #   KERNEL_SRC, KERNEL_BRANCH, COMPILER_STRING
 # ======================================================
 
@@ -50,39 +43,10 @@ fi
 case "${ROOT_SOLUTION:-VANILLA}" in
     KSU_NEXT)          ROOT_DISPLAY="KernelSU-Next" ;;
     RESUKISU)          ROOT_DISPLAY="ReSukiSU" ;;
-    RESUKISU_NOSUSFS)  ROOT_DISPLAY="ReSukiSU" ;;
     SUKISU)            ROOT_DISPLAY="SukiSU"   ;;
     VANILLA)           ROOT_DISPLAY="Vanilla"  ;;
     *)                 ROOT_DISPLAY="${ROOT_SOLUTION}" ;;
 esac
-
-SUSFS_VER="N/A"
-if [ "${SUSFS_ENABLED:-false}" = "true" ] && [ "${ROOT_SOLUTION:-}" != "VANILLA" ]; then
-    SUSFS_H="${KERNEL_SRC:-}/include/linux/susfs.h"
-    if [ -f "$SUSFS_H" ]; then
-        # Bug fix: removed '|| true' which silently swallowed grep failures.
-        # Now warns explicitly if the version string can't be parsed, so you
-        # know whether the header format changed rather than silently getting N/A.
-        SUSFS_VER=$(grep -m1 'SUSFS_VERSION' "$SUSFS_H" | grep -oP 'v?\d+\.\d+\.\d+' | head -1)
-        if [ -z "$SUSFS_VER" ]; then
-            warn "Could not parse SUSFS_VERSION from $SUSFS_H — check header format"
-            SUSFS_VER="N/A"
-        else
-            [[ "$SUSFS_VER" == v* ]] || SUSFS_VER="v${SUSFS_VER}"
-        fi
-    else
-        warn "SUSFS header not found at $SUSFS_H — SUSFS_ENABLED=true but header missing"
-    fi
-elif [ "${ROOT_SOLUTION:-}" = "RESUKISU_NOSUSFS" ]; then
-    # PitchKernel: distinguish "explicitly disabled for this variant" from
-    # plain N/A (which reads as "not checked/unknown" to a Telegram audience
-    # who otherwise cannot tell this apart from a vanilla no-root build at a
-    # glance). SUSFS source is still present in the tree (setup.sh fetches it
-    # unconditionally alongside the KSU driver) but the KSU_SUSFS* Kconfig
-    # symbols are off -- build.yml's verification gate already confirmed this
-    # before this script ever runs, so this label is not a bare claim.
-    SUSFS_VER="disabled (ReSukiSU only)"
-fi
 
 # Bug fix: original mdv2_code_escape() only escaped \ and \`.
 # Telegram MarkdownV2 requires escaping 16 special characters outside code blocks:
@@ -129,7 +93,6 @@ CAPTION="\`\`\`PitchKernel
 Device    : munch (Poco F4)
 Linux     : $(mdv2_code_escape "${KERNEL_VERSION:-N/A}")
 Root      : $(mdv2_code_escape "$ROOT_DISPLAY")
-SuSFS     : $(mdv2_code_escape "$SUSFS_VER")
 Branch    : $(mdv2_code_escape "${KERNEL_BRANCH:-N/A}")
 Compiler  : $(mdv2_code_escape "${COMPILER_STRING:-ZyCromerZ Clang 16}")
 Date      : $(date +'%d %b %Y')

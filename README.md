@@ -38,7 +38,8 @@ Manual dispatch only (`workflow_dispatch`). Inputs:
 - `script`: only `build.sh` (AOSP+MIUI dual zip) is wired into packaging.
   `build-miui.sh` exists upstream but this pipeline doesn't use it.
 - `ksu`: enables the current root provider (see STATUS.md for which one
-  that actually is right now) + SUSFS.
+  that actually is right now). SUSFS support has been removed from the
+  kernel tree entirely.
 
 ## Known open issues (not fixed in this pass — need real device/log evidence)
 

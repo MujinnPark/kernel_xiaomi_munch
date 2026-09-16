@@ -53,6 +53,6 @@ for pkg in $hide_apps; do
   am force-stop "$pkg" 2>/dev/null || true
 done
 
-log -p w -t PitchKernel "root_hide: force-stop applied to banking apps; susfs hide call is DISABLED pending verified ksu_susfs syntax — see script header"
+log -p w -t PitchKernel "root_hide: force-stop applied to banking apps; susfs hide call is DISABLED -- SUSFS has been removed from the kernel entirely, see PitchKernel/STATUS.md"
 
 exit 0

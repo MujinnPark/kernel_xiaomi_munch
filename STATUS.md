@@ -6,6 +6,60 @@ config. If this file disagrees with a comment somewhere else in the repo,
 this file is more likely to be right — comments elsewhere have gone stale
 without anyone noticing.
 
+## SUSFS: removed entirely (this pass)
+
+SUSFS support has been removed from `pitch_kernel_sm8250` completely, not
+just disabled. This includes:
+
+- `fs/susfs.c`, `include/linux/susfs.h`, `include/linux/susfs_def.h` —
+  deleted, along with `fs/Makefile`'s `obj-$(CONFIG_KSU_SUSFS)` build rule.
+- Every `#ifdef CONFIG_KSU_SUSFS*` call site across the tree (fs/namei.c,
+  fs/namespace.c, fs/proc_namespace.c, fs/stat.c, fs/statfs.c, fs/open.c,
+  fs/readdir.c, fs/proc/base.c, fs/proc/task_mmu.c, fs/proc/fd.c,
+  fs/proc/cmdline.c, fs/notify/fdinfo.c, fs/exec.c, kernel/sys.c,
+  kernel/kallsyms.c, kernel/reboot.c, security/selinux/avc.c, mm/memory.c)
+  — stripped; where a live `#else` branch existed, that branch is now the
+  unconditional code path.
+- Two ReSukiSU features that were (incorrectly) gated on `CONFIG_KSU_SUSFS`
+  instead of `CONFIG_KSU` — the init.rc read-hook in `fs/read_write.c`
+  (`ksu_is_init_rc_hook_enabled` / `ksu_handle_sys_read`) and the
+  volume-button input hook in `drivers/input/input.c`
+  (`ksu_is_input_hook_enabled` / `ksu_handle_input_handle_event`) — were
+  re-gated on `CONFIG_KSU` so they keep working. These are ReSukiSU
+  features, not SUSFS features; they were never meant to disappear.
+- `build.sh` / `build-miui.sh`: the `SUSFS_ENABLE` axis, the `nosusfs`
+  third positional arg, the SUSFS/KernelSU hook fetch-integrity check, and
+  the `KSU_SUSFS*` `scripts/config` calls are all gone. `KSU_MANUAL_HOOK`
+  is now unconditionally enabled whenever KSU is enabled (it's the only
+  hook mechanism left in this tree).
+- `build.yml`: the `susfs-only` matrix variant and the `variants` input
+  option for it are gone (`nosusfs-only` renamed `resukisu-only`). The
+  "Verify SUSFS symbols did not leak in" gate is renamed and simplified to
+  "Verify KSU present and no SUSFS symbols leaked in" — it's now a
+  permanent regression guard (every `CONFIG_KSU_SUSFS*` symbol must be
+  absent, unconditionally) rather than a variant-aware presence/absence
+  check. The one-off "DEBUG - snapshot ReSukiSU/SUSFS generated source
+  layout" step is removed (its stated purpose, investigating a SUSFS 2.2.0
+  backport, no longer applies).
+- `PitchKernel/release/telegram.sh`: `SUSFS_ENABLED` env var and the
+  `SUSFS_VER`/`SuSFS` caption line are gone; `ROOT_SOLUTION` no longer
+  accepts `RESUKISU_NOSUSFS` (collapsed into plain `RESUKISU`).
+- The GitHub Release body's `SUSFS:` line is removed.
+
+ReSukiSU itself (the `KernelSU` submodule, `.gitmodules` → 
+`https://github.com/ReSukiSU/ReSukiSU`) is untouched and is the only
+root/kernel modification remaining in this tree. There is no separate
+KernelSU integration anywhere in this repo to remove — `drivers/kernelsu`
+is a symlink into the same ReSukiSU submodule, not a second implementation.
+
+**Open risk, not resolved by static analysis:** ReSukiSU's own fetched
+source (`kernel/setup.sh`, pulled at build time from
+`ReSukiSU/ReSukiSU`) was not available to inspect during this removal —
+only its static call sites in this tree were visible. If ReSukiSU's live
+hook code calls a `susfs_*` symbol this tree no longer defines, that will
+surface as an `undefined symbol` link failure on the next CI run, not
+before. Watch the first post-removal build closely.
+
 ## Root provider: ReSukiSU (live, confirmed by reading actual build.yml/build.sh)
 
 - `build.yml`: `env.ROOT_PROVIDER = ReSukiSU`, `env.ROOT_SOLUTION_KEY = RESUKISU`
