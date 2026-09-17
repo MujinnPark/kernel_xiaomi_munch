@@ -1,0 +1,105 @@
+--- /tmp/builder_pristine/kernel_xiaomi_munch-main/.github/workflows/build.yml	2026-09-16 14:08:42.000000000 +0000
++++ kernel_xiaomi_munch-main/kernel_xiaomi_munch-main/.github/workflows/build.yml	2026-09-17 06:29:15.868830446 +0000
+@@ -796,7 +796,7 @@
+           path: /tmp/pitchkernel-build-step.log
+           retention-days: 7
+ 
+-      - name: Verify KSU present and no SUSFS symbols leaked in
++      - name: Verify KSU present and SUSFS actually compiled in
+         run: |
+           # This step exists because of a real incident: a prior CI change swapped
+           # the root provider in apasitu/build.sh (ReSukiSU -> KernelSU-Next) without
+@@ -806,15 +806,20 @@
+           # during syncconfig. That can silently ship a build mislabeled with respect
+           # to what it actually contains.
+           #
+-          # PitchKernel: SUSFS support has been removed from the kernel tree
+-          # entirely (fs/susfs.c, include/linux/susfs*.h, and every
+-          # CONFIG_KSU_SUSFS* call site are gone -- see PitchKernel/STATUS.md for
+-          # the removal record). This gate is now permanent regression detection,
+-          # not variant-aware verification: every CONFIG_KSU_SUSFS* symbol must be
+-          # ABSENT in every KSU-enabled build, unconditionally. If one of these
+-          # symbols is ever =y again, it means SUSFS source or its Kconfig was
+-          # reintroduced (e.g. by a careless merge or a backported patch) without
+-          # anyone deciding to bring SUSFS back on purpose -- fail loudly.
++          # PitchKernel: SUSFS 2.3.0 has been ported into this kernel tree
++          # (fs/susfs.c, include/linux/susfs.h, include/linux/susfs_def.h, plus
++          # the su-compat hook sites in fs/exec.c, fs/open.c, fs/stat.c wired
++          # through #ifdef CONFIG_KSU_SUSFS -- see the port's commit history
++          # for the full file list). build.sh/build-miui.sh now select
++          # CONFIG_KSU_SUSFS over CONFIG_KSU_MANUAL_HOOK in ReSukiSU's
++          # Kconfig `choice` block whenever KSU is enabled. This gate verifies
++          # that selection actually landed in the compiled config: every
++          # CONFIG_KSU_SUSFS* symbol must be PRESENT, and CONFIG_KSU_MANUAL_HOOK
++          # must be ABSENT, in every KSU-enabled build. If SUSFS symbols are
++          # ever missing again, it means the Kconfig wiring was reverted or a
++          # merge/backport silently dropped it without a deliberate decision
++          # to do so -- fail loudly, the same as the absence-gate this
++          # replaces failed loudly on the opposite condition.
+           if [ "${{ matrix.ksu_enable }}" != "true" ]; then
+             echo "matrix.ksu_enable=false (variant: ${{ matrix.label }}) — no KSU/SUSFS expected, skipping verification."
+             exit 0
+@@ -824,12 +829,12 @@
+           [ -f "$CONFIG_FILE" ] || { echo "FATAL: $CONFIG_FILE not found — build may not have produced a config"; exit 1; }
+ 
+           # PitchKernel: all 9 KSU_SUSFS_* sub-symbols plus the top-level
+-          # CONFIG_KSU_SUSFS gate itself. None of these should ever be =y again
+-          # now that fs/susfs.c, include/linux/susfs*.h, and every
+-          # CONFIG_KSU_SUSFS* call site are gone from the kernel tree.
++          # CONFIG_KSU_SUSFS gate itself. All of these must be =y in every
++          # KSU-enabled build now that SUSFS has been ported into the kernel
++          # tree and build.sh/build-miui.sh select it over KSU_MANUAL_HOOK.
+           SUSFS_SYMS="CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_ENABLE_LOG CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG CONFIG_KSU_SUSFS_OPEN_REDIRECT CONFIG_KSU_SUSFS_SUS_MAP"
+ 
+-          echo "Checking $CONFIG_FILE for KSU (expect PRESENT) and SUSFS symbols (expect ABSENT, permanently)..."
++          echo "Checking $CONFIG_FILE for KSU and SUSFS symbols (expect PRESENT) and KSU_MANUAL_HOOK (expect ABSENT)..."
+           BAD=0
+           if grep -q "^CONFIG_KSU=y" "$CONFIG_FILE"; then
+             echo "  OK: CONFIG_KSU=y"
+@@ -838,27 +843,36 @@
+             BAD=1
+           fi
+ 
++          if grep -q "^CONFIG_KSU_MANUAL_HOOK=y" "$CONFIG_FILE"; then
++            echo "  LEAKED: CONFIG_KSU_MANUAL_HOOK=y is set, but this tree now selects KSU_SUSFS"
++            echo "  instead (KSU_MANUAL_HOOK and KSU_SUSFS are mutually exclusive in ReSukiSU's"
++            echo "  Kconfig choice block) -- the su-compat hook sites in fs/exec.c, fs/open.c,"
++            echo "  and fs/stat.c expect KSU_SUSFS's call signatures, not KSU_MANUAL_HOOK's."
++            BAD=1
++          else
++            echo "  OK: CONFIG_KSU_MANUAL_HOOK is not set to y"
++          fi
++
+           for SYM in $SUSFS_SYMS; do
+             if grep -q "^${SYM}=y" "$CONFIG_FILE"; then
+-              echo "  LEAKED: ${SYM}=y is set, but SUSFS was removed from this tree entirely"
+-              BAD=1
++              echo "  OK: ${SYM}=y"
+             else
+-              echo "  OK: ${SYM} is not set to y"
++              echo "  MISSING: ${SYM} is not set to y — SUSFS should be fully enabled in this variant"
++              BAD=1
+             fi
+           done
+ 
+           if [ "$BAD" -eq 1 ]; then
+             echo ""
+-            echo "FATAL: either KSU is missing, or a CONFIG_KSU_SUSFS* symbol leaked into"
+-            echo "the config despite SUSFS having been removed from the kernel tree. Do not"
+-            echo "let this build ship -- check for a reintroduced SUSFS source file, a"
+-            echo "reintroduced 'scripts/config -e KSU_SUSFS...' call in build.sh/"
+-            echo "build-miui.sh, or a merge/backport that brought SUSFS back without a"
+-            echo "deliberate decision to do so."
++            echo "FATAL: either KSU is missing, KSU_MANUAL_HOOK leaked in alongside KSU_SUSFS,"
++            echo "or a CONFIG_KSU_SUSFS* symbol failed to land despite the port. Do not let"
++            echo "this build ship -- check for a reverted SUSFS source file, a reverted"
++            echo "'scripts/config -e KSU_SUSFS...' call in build.sh/build-miui.sh, or a merge"
++            echo "that silently dropped the port."
+             exit 1
+           fi
+ 
+-          echo "'${{ matrix.label }}' verification passed — KSU present, SUSFS genuinely absent."
++          echo "'${{ matrix.label }}' verification passed — KSU present, SUSFS genuinely compiled in."
+ 
+       - name: Verify uclamp actually compiled in
+         run: |
