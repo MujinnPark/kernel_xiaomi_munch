@@ -563,7 +563,7 @@ jobs:
         run: |
           LOG="/tmp/pitchkernel-build-step.log"
           echo "--- grepping full $LOG ($(wc -l < "$LOG") lines) for KSU version markers ---"
-          grep -n "KSU_COMMIT_SHA\|KSU_VERSION_FULL\|KSU_TAG_NAME\|KSU_LOCAL_VERSION\|fetch --unshallow\|rev-list --count\|shallow" "$LOG" || echo "NO MATCHES FOUND"
+          grep -n "KSU_COMMIT_SHA\|KSU_VERSION_FULL\|KSU_TAG_NAME\|KSU_LOCAL_VERSION\|fetch --unshallow\|rev-list --count\|shallow\|actually cloned\|Checked out\|Switched to" "$LOG" || echo "NO MATCHES FOUND"
           echo "--- end grep ---"
 
       - name: Verify walt.o actual compiled bytes for margin_up
