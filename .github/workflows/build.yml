@@ -559,6 +559,13 @@ jobs:
             exit "$BUILD_EXIT"
           fi
 
+      - name: DIAG - dump KSU version computation from full build log
+        run: |
+          LOG="/tmp/pitchkernel-build-step.log"
+          echo "--- grepping full $LOG ($(wc -l < "$LOG") lines) for KSU version markers ---"
+          grep -n "KSU_COMMIT_SHA\|KSU_VERSION_FULL\|KSU_TAG_NAME\|KSU_LOCAL_VERSION\|fetch --unshallow\|rev-list --count\|shallow" "$LOG" || echo "NO MATCHES FOUND"
+          echo "--- end grep ---"
+
       - name: Verify walt.o actual compiled bytes for margin_up
         # PitchKernel: diagnostic added 2026-07-18, fixed same day. First
         # version of this step assumed sysctl_sched_capacity_margin_up sits
