@@ -122,3 +122,40 @@ the AnyKernel-installed script is missing — but since it's never zipped into
 anything, no user's device has this file, so the fallback never runs either.
 Decide: wire it into packaging, or delete it. Leaving it as-is guarantees
 someone eventually assumes it's active when it isn't.
+
+## UPDATE (2026-09-20): SUSFS re-added — the "SUSFS: removed entirely" section above is stale
+
+The section above, "SUSFS: removed entirely (this pass)", was accurate as
+of the 2026-07-03 audit. It is no longer accurate. SUSFS 2.3.0 has since
+been backported back into `pitch_kernel_sm8250` under `CONFIG_KSU_SUSFS`,
+and is confirmed live: every `CONFIG_KSU_SUSFS*` Kconfig symbol is present
+and `=y`, and the ReSukiSU manager app reports `SuSFS Version: v2.3.0` on
+a booted device (POCO F4, kernel `4.19.325-pitchkernel+`, ReSukiSU commit
+`009bd40f`).
+
+Specifically, as of this update:
+- The CI gate described above as renamed to "Verify KSU present and no
+  SUSFS symbols leaked in" (asserting *absence*) is **not** what currently
+  ships in `build.yml`. The live step is "Verify KSU present and SUSFS
+  actually compiled in" and asserts every `CONFIG_KSU_SUSFS*` symbol is
+  `=y` — i.e. the opposite check. Confirmed directly from a passing CI run
+  (workflow run producing artifact `PitchKernel-munch-resukisu-343`,
+  2026-09-19) and from that run's `.config` output.
+- Do not trust the file-by-file removal list above (`fs/susfs.c`,
+  `include/linux/susfs*.h`, the `#ifdef CONFIG_KSU_SUSFS*` call-site list,
+  etc.) as a description of the current tree. Those files/call-sites may
+  have been reintroduced as part of the SUSFS 2.3.0 backport; this update
+  does not re-audit them individually. Re-verify from source before
+  relying on any specific claim in the section above.
+- The general guidance in this file's own preamble ("if this file
+  disagrees with a comment elsewhere, this file is more likely right")
+  does **not** apply to the SUSFS section above as of this update — for
+  SUSFS specifically, prefer the live CI gate's actual behavior and a
+  fresh `grep` of the tree over trusting either this file or scattered
+  comments blindly.
+
+Several build-script and workflow comments that repeated the "SUSFS
+removed entirely" claim (in `build.sh`, `build-miui.sh`, `build.yml`, and
+this repo's `README.md`) were corrected in the same pass as this update.
+This file was the last one fixed, appended rather than edited in place, to
+preserve the original 2026-07-03 audit as a historical record.

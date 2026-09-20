@@ -21,14 +21,18 @@ on:
         # requirement is exactly what caused this repo to say "KernelSU
         # Next" in five places after switching back to ReSukiSU.
         #
-        # PitchKernel: SUSFS support has been removed entirely from the
-        # kernel tree (fs/susfs.c, include/linux/susfs*.h, and every
-        # CONFIG_KSU_SUSFS* call site are gone). There is no more SUSFS
-        # axis -- this input now selects between two variants (root via
-        # ReSukiSU, or no root), each as its own matrix job entry, both
-        # reusing the same job body. The former 'susfs-only' option is
-        # removed; 'nosusfs-only' is renamed 'resukisu-only' since "no
-        # susfs" is no longer a meaningful distinction.
+        # PitchKernel: SUSFS 2.3.0 is backported in-tree under
+        # CONFIG_KSU_SUSFS (verified present and enabled via the "Verify
+        # KSU present and SUSFS actually compiled in" step below) -- this
+        # comment previously claimed SUSFS had been removed entirely, which
+        # is stale/incorrect. There is no separate susfs_enable axis
+        # though: this input selects between two variants (root via
+        # ReSukiSU, which includes SUSFS, or no root), each as its own
+        # matrix job entry, both reusing the same job body. The former
+        # 'susfs-only' option is removed; 'nosusfs-only' is renamed
+        # 'resukisu-only' since "no susfs" is no longer a meaningful
+        # distinction -- SUSFS ships as part of the ReSukiSU variant, not
+        # as an independently toggleable option.
         description: 'Which variant(s) to build'
         required: true
         type: choice
@@ -64,12 +68,16 @@ jobs:
       # variant's otherwise-healthy build -- each variant ships or fails on
       # its own merit, as required.
       #
-      # PitchKernel: SUSFS support has been removed from the kernel tree
-      # entirely (fs/susfs.c, include/linux/susfs*.h, and every
-      # CONFIG_KSU_SUSFS* call site are gone -- see PitchKernel/STATUS.md
-      # for the removal record). There is no more susfs_enable axis and no
-      # susfs-only variant; build.sh's "nosusfs" positional arg is gone
-      # too (it toggled a SUSFS_ENABLE variable that no longer exists).
+      # PitchKernel: SUSFS 2.3.0 is backported in-tree under
+      # CONFIG_KSU_SUSFS (verified present and enabled via the "Verify KSU
+      # present and SUSFS actually compiled in" step below, which asserts
+      # every CONFIG_KSU_SUSFS* symbol is =y) -- this comment previously,
+      # incorrectly, claimed SUSFS had been removed entirely; it has not.
+      # There is no separate susfs_enable axis and no susfs-only variant
+      # though: build.sh's "nosusfs" positional arg is gone too (it
+      # toggled a SUSFS_ENABLE variable that no longer exists as an
+      # independent toggle) -- SUSFS ships unconditionally as part of the
+      # ReSukiSU variant instead.
       #
       # Each matrix entry carries its own root_arg (literal apasitu/
       # build.sh positional args), root_provider (human-readable) and
