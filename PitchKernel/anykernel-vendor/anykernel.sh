@@ -113,8 +113,20 @@ cp "$AKHOME"/patch/pitchkernel_cpufreq.sh /data/adb/post-fs-data.d/pitchkernel_c
 cp "$AKHOME"/patch/pitchkernel_banking_prep.sh /data/adb/post-fs-data.d/pitchkernel_banking_prep.sh 2>/dev/null;
 chmod 755 /data/adb/post-fs-data.d/pitchkernel_cpufreq.sh 2>/dev/null;
 chmod 755 /data/adb/post-fs-data.d/pitchkernel_banking_prep.sh 2>/dev/null;
-  cp "$AKHOME/patch/pitchkernel_sepolicy.sh" /data/adb/post-fs-data.d/pitchkernel_sepolicy.sh 2>/dev/null;
-  chmod 755 /data/adb/post-fs-data.d/pitchkernel_sepolicy.sh 2>/dev/null;
+## pitchkernel_sepolicy.sh removed 2026-09-20: audited via a live device's
+## dmesg (96x "sepol: cmd #N failed" at boot) and found every one of its 61
+## allow rules referenced Xiaomi vendor/HyperOS SELinux types
+## (vendor_hal_citsensorservice_xiaomi_default, hyperos_cust_feature_resolve_service,
+## mcd, misight, etc.) that do not exist in this kernel's compiled policydb --
+## a 0% effective-rule rate, not a partial/fixable gap. Script also
+## constructed a malformed fake module directory
+## (/data/adb/modules/pitchkernel_tuning/, missing module.prop, so never
+## visible in the KSU manager's module list) rather than installing via a
+## real module, and re-wrote it on every boot. No indication anyone
+## verified this ruleset against PitchKernel's actual policy base before
+## it was added. Removed rather than repaired: origin/intent unconfirmed,
+## zero rules were doing anything, and no functional regression from
+## removing something that was already fully inert.
 ## PitchKernel v3 scheduler/GPU tuning. Named 90-* so it runs after
 ## pitchkernel_cpufreq.sh (governor default) in most post-fs-data.d
 ## implementations that sort scripts lexically before exec -- this script
