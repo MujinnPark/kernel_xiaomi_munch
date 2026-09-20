@@ -109,6 +109,10 @@ ui_print " ";
 
 ## Install helper scripts to post-fs-data.d.
 mkdir -p /data/adb/post-fs-data.d 2>/dev/null;
+## zram resize runs first: least swapped-out data to discard via its
+## reset step the earlier in boot it runs (see script's own comments).
+cp "$AKHOME"/patch/pitchkernel_zram_resize.sh /data/adb/post-fs-data.d/pitchkernel_zram_resize.sh 2>/dev/null;
+chmod 755 /data/adb/post-fs-data.d/pitchkernel_zram_resize.sh 2>/dev/null;
 cp "$AKHOME"/patch/pitchkernel_cpufreq.sh /data/adb/post-fs-data.d/pitchkernel_cpufreq.sh 2>/dev/null;
 cp "$AKHOME"/patch/pitchkernel_banking_prep.sh /data/adb/post-fs-data.d/pitchkernel_banking_prep.sh 2>/dev/null;
 chmod 755 /data/adb/post-fs-data.d/pitchkernel_cpufreq.sh 2>/dev/null;
