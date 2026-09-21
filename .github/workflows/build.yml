@@ -23,22 +23,27 @@ on:
         #
         # PitchKernel: SUSFS 2.3.0 is backported in-tree under
         # CONFIG_KSU_SUSFS (verified present and enabled via the "Verify
-        # KSU present and SUSFS actually compiled in" step below) -- this
-        # comment previously claimed SUSFS had been removed entirely, which
-        # is stale/incorrect. There is no separate susfs_enable axis
-        # though: this input selects between two variants (root via
-        # ReSukiSU, which includes SUSFS, or no root), each as its own
-        # matrix job entry, both reusing the same job body. The former
-        # 'susfs-only' option is removed; 'nosusfs-only' is renamed
-        # 'resukisu-only' since "no susfs" is no longer a meaningful
-        # distinction -- SUSFS ships as part of the ReSukiSU variant, not
-        # as an independently toggleable option.
+        # KSU present and SUSFS actually compiled in" step below). The
+        # 'susfs-only' option was removed and 'nosusfs-only' renamed to
+        # 'resukisu-only' in an earlier pass, on the basis that SUSFS
+        # shipped unconditionally with ReSukiSU and there was no
+        # independent toggle -- that basis changed 2026-09-21: build.sh
+        # now supports a second root_arg ("ksu-nosusfs") that swaps
+        # SUSFS's hook mechanism (CONFIG_KSU_SUSFS) for ReSukiSU's other,
+        # mutually exclusive hook mechanism (CONFIG_KSU_MANUAL_HOOK),
+        # added specifically to isolate whether SUSFS itself contributes
+        # to specific integrity/attestation-scanner findings (see
+        # CHANGELOG.md, 2026-09-21 entry). 'resukisu-nosusfs' below is
+        # EXPERIMENTAL and unverified on real hardware as of this pass --
+        # unlike 'resukisu-only', which has been the sole verified root
+        # path all session.
         description: 'Which variant(s) to build'
         required: true
         type: choice
         default: 'resukisu-only'
         options:
           - 'resukisu-only'
+          - 'resukisu-nosusfs'
           - 'vanilla-only'
       skip_ccache:
         description: 'DIAGNOSTIC: skip restoring ccache for this run (forces a full rebuild, use to rule out stale-cache issues)'
@@ -69,15 +74,18 @@ jobs:
       # its own merit, as required.
       #
       # PitchKernel: SUSFS 2.3.0 is backported in-tree under
-      # CONFIG_KSU_SUSFS (verified present and enabled via the "Verify KSU
-      # present and SUSFS actually compiled in" step below, which asserts
-      # every CONFIG_KSU_SUSFS* symbol is =y) -- this comment previously,
-      # incorrectly, claimed SUSFS had been removed entirely; it has not.
-      # There is no separate susfs_enable axis and no susfs-only variant
-      # though: build.sh's "nosusfs" positional arg is gone too (it
-      # toggled a SUSFS_ENABLE variable that no longer exists as an
-      # independent toggle) -- SUSFS ships unconditionally as part of the
-      # ReSukiSU variant instead.
+      # CONFIG_KSU_SUSFS, and is what "resukisu-only" below builds (the
+      # sole verified-on-hardware root path all session, asserted present
+      # via the "Verify KSU present and SUSFS actually compiled in" step).
+      # "resukisu-nosusfs" is a second, EXPERIMENTAL root variant added
+      # 2026-09-21 to isolate whether SUSFS itself contributes to specific
+      # integrity/attestation-scanner findings (CHANGELOG.md, same date):
+      # it builds the same ReSukiSU commit with CONFIG_KSU_MANUAL_HOOK
+      # instead of CONFIG_KSU_SUSFS (build.sh's new "ksu-nosusfs" root_arg
+      # -- these two are a mutually exclusive Kconfig `choice`, not
+      # independently toggleable, so this is a distinct variant rather
+      # than a susfs_enable flag on the existing one). Not yet confirmed
+      # booting/functioning on real hardware -- treat accordingly.
       #
       # Each matrix entry carries its own root_arg (literal apasitu/
       # build.sh positional args), root_provider (human-readable) and
@@ -93,6 +101,7 @@ jobs:
       matrix:
         include: ${{ fromJSON(
           inputs.variants == 'vanilla-only' && '[{"label":"Vanilla-NoRoot","ksu_enable":"false","root_arg":"","root_provider":"none","root_solution_key":"VANILLA","zip_type":"stock"}]' ||
+          inputs.variants == 'resukisu-nosusfs' && '[{"label":"ReSukiSU-NoSUSFS","ksu_enable":"true","root_arg":"ksu-nosusfs","root_provider":"ReSukiSU (no SUSFS, EXPERIMENTAL)","root_solution_key":"RESUKISU_NOSUSFS","zip_type":"resukisu-nosusfs"}]' ||
           '[{"label":"ReSukiSU","ksu_enable":"true","root_arg":"ksu","root_provider":"ReSukiSU","root_solution_key":"RESUKISU","zip_type":"resukisu"}]'
           ) }}
 
@@ -926,12 +935,9 @@ jobs:
           [ -f "$CONFIG_FILE" ] || { echo "FATAL: $CONFIG_FILE not found — build may not have produced a config"; exit 1; }
 
           # PitchKernel: all 9 KSU_SUSFS_* sub-symbols plus the top-level
-          # CONFIG_KSU_SUSFS gate itself. All of these must be =y in every
-          # KSU-enabled build now that SUSFS has been ported into the kernel
-          # tree and build.sh/build-miui.sh select it over KSU_MANUAL_HOOK.
+          # CONFIG_KSU_SUSFS gate itself.
           SUSFS_SYMS="CONFIG_KSU_SUSFS CONFIG_KSU_SUSFS_SUS_PATH CONFIG_KSU_SUSFS_SUS_MOUNT CONFIG_KSU_SUSFS_SUS_KSTAT CONFIG_KSU_SUSFS_SPOOF_UNAME CONFIG_KSU_SUSFS_ENABLE_LOG CONFIG_KSU_SUSFS_HIDE_KSU_SUSFS_SYMBOLS CONFIG_KSU_SUSFS_SPOOF_CMDLINE_OR_BOOTCONFIG CONFIG_KSU_SUSFS_OPEN_REDIRECT CONFIG_KSU_SUSFS_SUS_MAP"
 
-          echo "Checking $CONFIG_FILE for KSU and SUSFS symbols (expect PRESENT) and KSU_MANUAL_HOOK (expect ABSENT)..."
           BAD=0
           if grep -q "^CONFIG_KSU=y" "$CONFIG_FILE"; then
             echo "  OK: CONFIG_KSU=y"
@@ -940,6 +946,44 @@ jobs:
             BAD=1
           fi
 
+          # PitchKernel 2026-09-21: root_arg "ksu-nosusfs" (matrix label
+          # ReSukiSU-NoSUSFS) deliberately selects CONFIG_KSU_MANUAL_HOOK
+          # instead of CONFIG_KSU_SUSFS -- the mutually-exclusive Kconfig
+          # `choice` this whole gate is built around, just the other side
+          # of it. Assert the mirror-image expectation for that variant
+          # rather than skipping verification and losing the safety net:
+          # KSU_MANUAL_HOOK must be PRESENT and every KSU_SUSFS* symbol
+          # must be ABSENT, exactly reversed from the resukisu-only case.
+          if [ "${{ matrix.root_arg }}" == "ksu-nosusfs" ]; then
+            echo "Checking $CONFIG_FILE for KSU_MANUAL_HOOK (expect PRESENT) and SUSFS symbols (expect ABSENT)..."
+            if grep -q "^CONFIG_KSU_MANUAL_HOOK=y" "$CONFIG_FILE"; then
+              echo "  OK: CONFIG_KSU_MANUAL_HOOK=y"
+            else
+              echo "  MISSING: CONFIG_KSU_MANUAL_HOOK is not set to y — root_arg ksu-nosusfs should select it"
+              BAD=1
+            fi
+
+            for SYM in $SUSFS_SYMS; do
+              if grep -q "^${SYM}=y" "$CONFIG_FILE"; then
+                echo "  LEAKED: ${SYM}=y is set, but this variant selects KSU_MANUAL_HOOK instead"
+                BAD=1
+              else
+                echo "  OK: ${SYM} is not set to y"
+              fi
+            done
+
+            if [ "$BAD" -eq 1 ]; then
+              echo ""
+              echo "FATAL: KSU is missing, KSU_MANUAL_HOOK failed to land, or a KSU_SUSFS* symbol"
+              echo "leaked into a variant that should not have it. Do not let this build ship."
+              exit 1
+            fi
+
+            echo "'${{ matrix.label }}' verification passed — KSU present, KSU_MANUAL_HOOK genuinely compiled in, no SUSFS leakage."
+            exit 0
+          fi
+
+          echo "Checking $CONFIG_FILE for KSU and SUSFS symbols (expect PRESENT) and KSU_MANUAL_HOOK (expect ABSENT)..."
           if grep -q "^CONFIG_KSU_MANUAL_HOOK=y" "$CONFIG_FILE"; then
             echo "  LEAKED: CONFIG_KSU_MANUAL_HOOK=y is set, but this tree now selects KSU_SUSFS"
             echo "  instead (KSU_MANUAL_HOOK and KSU_SUSFS are mutually exclusive in ReSukiSU's"
