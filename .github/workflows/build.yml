@@ -1016,6 +1016,7 @@ jobs:
           echo "'${{ matrix.label }}' verification passed — KSU present, SUSFS genuinely compiled in."
 
       - name: Verify uclamp actually compiled in
+        if: false  # TEMP: intentional A/B test, see freeze investigation
         run: |
           # Same failure class as the SUSFS incident above, different symbol:
           # the "Patch defconfig" step previously contained a hardcoded
