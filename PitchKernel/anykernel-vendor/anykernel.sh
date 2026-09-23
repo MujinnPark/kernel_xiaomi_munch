@@ -42,51 +42,18 @@ ui_print " ";
 ui_print "  PitchKernel by Mujinn";
 ui_print " ";
 
-## ROM detection — auto from zip filename, volume-key fallback
-case "$ZIPFILE" in
-  *miui*|*MIUI*|*hyper*|*HyperOS*)
-    ui_print "┌─────────────────────────────────┐";
-    ui_print "│    MIUI/HyperOS ROM Detected    │";
-    ui_print "└─────────────────────────────────┘";
-    os="miui";
-    mv "$AKHOME"/munch-miui-dtbo.img "$AKHOME"/dtbo.img 2>/dev/null;
-    rm -f "$AKHOME"/munch-aosp-dtbo.img 2>/dev/null;
-    ;;
-  *)
-    ui_print "> ROM: MIUI/HyperOS (Vol +) || AOSP (Vol -)";
-    ui_print "  (waiting 8s, defaults to AOSP)";
-    ROM_SEL="aosp";
-    i=0;
-    while [ $i -lt 16 ]; do
-      ev=$(timeout 0.5 getevent -qlc 1 2>/dev/null);
-      case "$ev" in
-        *KEY_VOLUMEUP*DOWN*)
-          ROM_SEL="miui"; break ;;
-        *KEY_VOLUMEDOWN*DOWN*)
-          ROM_SEL="aosp"; break ;;
-      esac;
-      i=$((i+1));
-    done;
-    case "$ROM_SEL" in
-      miui)
-        ui_print "┌─────────────────────────────────┐";
-        ui_print "│      MIUI/HyperOS Selected      │";
-        ui_print "└─────────────────────────────────┘";
-        os="miui";
-        mv "$AKHOME"/munch-miui-dtbo.img "$AKHOME"/dtbo.img 2>/dev/null;
-        rm -f "$AKHOME"/munch-aosp-dtbo.img 2>/dev/null;
-        ;;
-      *)
-        ui_print "┌─────────────────────────────────┐";
-        ui_print "│        AOSP ROM Detected        │";
-        ui_print "└─────────────────────────────────┘";
-        os="aosp";
-        mv "$AKHOME"/munch-aosp-dtbo.img "$AKHOME"/dtbo.img 2>/dev/null;
-        rm -f "$AKHOME"/munch-miui-dtbo.img 2>/dev/null;
-        ;;
-    esac;
-    ;;
-esac;
+## ROM selection: split-zip model (2026-09-22). Each PitchKernel zip now
+## ships exactly one ROM's kernel set at kernels/$os/ (from build.sh's own
+## per-ROM output — PitchKernel_AOSP_*.zip or PitchKernel_MIUI_*.zip — no
+## longer the old combined kernels/aosp/+kernels/miui/ dual zip). $os is a
+## fixed build-time constant substituted into this vendored copy by
+## kernel_xiaomi_munch's CI packaging step, not detected at flash time —
+## the previous runtime detection (zip-filename match, and before that a
+## broken getevent volume-key prompt that never worked reliably under
+## TWRP's update-binary shell environment) is removed as dead code now
+## that ambiguity no longer exists: one zip, one ROM, known at build time.
+os="__PITCHKERNEL_OS__";
+ui_print "  Target ROM: $os";
 ui_print " ";
 
 ## BUG FIX: Move kernel Image and dtb from kernels/$os/ to $AKHOME/ root.

@@ -1183,14 +1183,31 @@ jobs:
             || { echo "ERROR: update-binary missing — vendored tree incomplete"; exit 1; }
           echo "Vendored AnyKernel3 overlay intact."
 
-      - name: Package zip
+      - name: Package zip (AOSP + MIUI, split)
+        # PitchKernel: split packaging, 2026-09-22. build.sh already produces
+        # two independent, fully self-contained zips -- PitchKernel_AOSP_*.zip
+        # and PitchKernel_MIUI_*.zip, each with its own flat kernels/<os>/
+        # {Image,dtb,dtbo.img} -- see build.sh "Building for AOSP" /
+        # "Building for MIUI" blocks. The old version of this step unzipped
+        # both, merged them into one combined kernels/aosp/+kernels/miui/ tree,
+        # and relied on anykernel.sh runtime ROM detection (zip filename match,
+        # with a broken getevent volume-key fallback before that) to pick one
+        # at flash time. That runtime ambiguity is why users on HyperOS kept
+        # getting the AOSP image: the detection logic's failure mode defaulted
+        # to AOSP. Removing the merge removes the ambiguity entirely -- each
+        # zip now contains exactly one ROM's boot image, known at build time,
+        # selected by which file the user downloads and flashes, not by
+        # anything that runs inside TWRP.
+        #
+        # This step now loops over both ROMs, building one AK3 zip per ROM
+        # from the SAME vendored anykernel-vendor tree, substituting the
+        # __PITCHKERNEL_OS__ placeholder in anykernel.sh with the literal
+        # "aosp" or "miui" for that pass. See PitchKernel/anykernel-vendor/
+        # anykernel.sh for the placeholder and why it exists (must be resolved
+        # per-zip, since the vendored file is shared, single-source-of-truth
+        # input to both passes).
         run: |
           DATE=$(date +%Y%m%d-%H%M)
-          # PitchKernel: TYPE/ARTIFACT_LABEL now come straight from the matrix
-          # entry (matrix.zip_type: resukisu / stock)
-          # instead of being reconstructed from a single ksu boolean. This is
-          # what actually keeps the two variants' artifacts/zips from colliding
-          # under the same filename within one workflow run.
           TYPE="${{ matrix.zip_type }}"
           ARTIFACT_LABEL="${{ matrix.zip_type }}"
           echo "BUILD_DATE=${DATE}" >> $GITHUB_ENV
@@ -1198,147 +1215,119 @@ jobs:
           echo "ARTIFACT_LABEL=${ARTIFACT_LABEL}" >> $GITHUB_ENV
 
           AOSP_SRC_ZIP=$(find apasitu -maxdepth 1 -name "PitchKernel_AOSP_*.zip" | head -1)
-          if [ -z "$AOSP_SRC_ZIP" ] || [ ! -f "$AOSP_SRC_ZIP" ]; then
-            echo "ERROR: PitchKernel_AOSP_*.zip not found. Available zips:"
-            find apasitu -maxdepth 1 -name "*.zip"
-            exit 1
-          fi
+          [ -n "$AOSP_SRC_ZIP" ] && [ -f "$AOSP_SRC_ZIP" ] || \
+            { echo "ERROR: PitchKernel_AOSP_*.zip not found. Available zips:"; find apasitu -maxdepth 1 -name "*.zip"; exit 1; }
           echo "AOSP source: $AOSP_SRC_ZIP ($(du -sh $AOSP_SRC_ZIP | cut -f1))"
 
-          # build.sh (the "AOSP+MIUI dual zip" path) also produces PitchKernel_MIUI_*.zip
-          # with its own Image/dtb/dtbo.img — these are NOT interchangeable with the
-          # AOSP ones (different config, different dtbo). Both must be present for
-          # the dual-image AK3 flash pattern to actually work for MIUI/HyperOS users.
           MIUI_SRC_ZIP=$(find apasitu -maxdepth 1 -name "PitchKernel_MIUI_*.zip" | head -1)
-          if [ -z "$MIUI_SRC_ZIP" ] || [ ! -f "$MIUI_SRC_ZIP" ]; then
-            echo "ERROR: PitchKernel_MIUI_*.zip not found. Available zips:"
-            find apasitu -maxdepth 1 -name "*.zip"
-            echo "If you intentionally ran a build that skips MIUI, this packaging step"
-            echo "needs a --skip-miui flag added — it currently assumes both zips exist."
-            exit 1
-          fi
+          [ -n "$MIUI_SRC_ZIP" ] && [ -f "$MIUI_SRC_ZIP" ] || \
+            { echo "ERROR: PitchKernel_MIUI_*.zip not found. Available zips:"; find apasitu -maxdepth 1 -name "*.zip"; exit 1; }
           echo "MIUI source: $MIUI_SRC_ZIP ($(du -sh $MIUI_SRC_ZIP | cut -f1))"
 
           mkdir -p /tmp/kernel_files/aosp /tmp/kernel_files/miui
-          unzip -q -j "$AOSP_SRC_ZIP" \
-            "kernels/aosp/Image" \
-            "kernels/aosp/dtb" \
-            "kernels/aosp/dtbo.img" \
-            -d /tmp/kernel_files/aosp/
-          unzip -q -j "$MIUI_SRC_ZIP" \
-            "kernels/miui/Image" \
-            "kernels/miui/dtb" \
-            "kernels/miui/dtbo.img" \
-            -d /tmp/kernel_files/miui/
+          unzip -q -j "$AOSP_SRC_ZIP" "kernels/aosp/Image" "kernels/aosp/dtb" "kernels/aosp/dtbo.img" -d /tmp/kernel_files/aosp/
+          unzip -q -j "$MIUI_SRC_ZIP" "kernels/miui/Image" "kernels/miui/dtb" "kernels/miui/dtbo.img" -d /tmp/kernel_files/miui/
 
           for os in aosp miui; do
             for f in Image dtb dtbo.img; do
-              if [ ! -f "/tmp/kernel_files/$os/$f" ]; then
-                echo "ERROR: $f not found for $os"
-                exit 1
-              fi
+              [ -f "/tmp/kernel_files/$os/$f" ] || { echo "ERROR: $f not found for $os"; exit 1; }
             done
           done
-          echo "Kernel files:"
-          ls -lh /tmp/kernel_files/aosp /tmp/kernel_files/miui
+          echo "Kernel files:"; ls -lh /tmp/kernel_files/aosp /tmp/kernel_files/miui
 
           AK3_DIR="apasitu/anykernel"
           [ -d "$AK3_DIR" ] || { echo "ERROR: $AK3_DIR not found"; ls apasitu/; exit 1; }
 
-          WORKDIR="/tmp/ak3_build"
-          rm -rf "$WORKDIR"
-          cp -r "$AK3_DIR" "$WORKDIR"
+          ZIP_NAMES=()
+          for os in aosp miui; do
+            WORKDIR="/tmp/ak3_build_${os}"
+            rm -rf "$WORKDIR"
+            cp -r "$AK3_DIR" "$WORKDIR"
 
-          CORE_LINES=$(wc -l < "$WORKDIR/tools/ak3-core.sh")
-          UB_LINES=$(wc -l < "$WORKDIR/META-INF/com/google/android/update-binary")
-          echo "ak3-core.sh in \$WORKDIR: $CORE_LINES lines"
-          echo "update-binary in \$WORKDIR: $UB_LINES lines"
-          [ "$CORE_LINES" -gt 900 ] || { echo "FATAL: ak3-core.sh truncated in WORKDIR"; exit 1; }
-          bash -n "$WORKDIR/tools/ak3-core.sh" || { echo "FATAL: ak3-core.sh syntax error"; exit 1; }
-          bash -n "$WORKDIR/META-INF/com/google/android/update-binary" || \
-            { echo "FATAL: update-binary syntax error"; exit 1; }
+            CORE_LINES=$(wc -l < "$WORKDIR/tools/ak3-core.sh")
+            [ "$CORE_LINES" -gt 900 ] || { echo "FATAL: ak3-core.sh truncated in WORKDIR ($os)"; exit 1; }
+            bash -n "$WORKDIR/tools/ak3-core.sh" || { echo "FATAL: ak3-core.sh syntax error ($os)"; exit 1; }
+            bash -n "$WORKDIR/META-INF/com/google/android/update-binary" || \
+              { echo "FATAL: update-binary syntax error ($os)"; exit 1; }
 
-          rm -rf "$WORKDIR/kernels"
-          mkdir -p "$WORKDIR/kernels/aosp" "$WORKDIR/kernels/miui"
-          cp /tmp/kernel_files/aosp/Image    "$WORKDIR/kernels/aosp/"
-          cp /tmp/kernel_files/aosp/dtb      "$WORKDIR/kernels/aosp/"
-          cp /tmp/kernel_files/aosp/dtbo.img "$WORKDIR/kernels/aosp/"
-          cp /tmp/kernel_files/miui/Image    "$WORKDIR/kernels/miui/"
-          cp /tmp/kernel_files/miui/dtb      "$WORKDIR/kernels/miui/"
-          cp /tmp/kernel_files/miui/dtbo.img "$WORKDIR/kernels/miui/"
+            grep -q "__PITCHKERNEL_OS__" "$WORKDIR/anykernel.sh" || \
+              { echo "FATAL: __PITCHKERNEL_OS__ placeholder not found in anykernel.sh -- vendored copy out of sync with expected split-zip format"; exit 1; }
+            sed -i "s/__PITCHKERNEL_OS__/${os}/" "$WORKDIR/anykernel.sh"
+            grep -q "os=\"${os}\";" "$WORKDIR/anykernel.sh" || \
+              { echo "FATAL: os substitution did not take effect for $os"; exit 1; }
 
-          [ -f "$WORKDIR/kernels/aosp/Image" ] || \
-            { echo "ERROR: AOSP Image missing after copy"; exit 1; }
-          [ -f "$WORKDIR/kernels/miui/Image" ] || \
-            { echo "ERROR: MIUI Image missing after copy"; exit 1; }
+            rm -rf "$WORKDIR/kernels"
+            mkdir -p "$WORKDIR/kernels/${os}"
+            cp "/tmp/kernel_files/${os}/Image"    "$WORKDIR/kernels/${os}/"
+            cp "/tmp/kernel_files/${os}/dtb"      "$WORKDIR/kernels/${os}/"
+            cp "/tmp/kernel_files/${os}/dtbo.img" "$WORKDIR/kernels/${os}/"
+            [ -f "$WORKDIR/kernels/${os}/Image" ] || { echo "ERROR: $os Image missing after copy"; exit 1; }
 
-          # Each ROM's own dtbo — do NOT cross-copy AOSP's dtbo to the MIUI slot or
-          # vice versa, they come from different builds with different configs.
-          cp /tmp/kernel_files/aosp/dtbo.img "$WORKDIR/munch-aosp-dtbo.img"
-          cp /tmp/kernel_files/miui/dtbo.img "$WORKDIR/munch-miui-dtbo.img"
+            ZIP_NAME="PitchKernel-${TYPE}-munch-${os}-${DATE}.zip"
+            ( cd "$WORKDIR" && zip -r9 "$GITHUB_WORKSPACE/$ZIP_NAME" . -x ".git/*" -x "*.gitignore" >/dev/null )
 
-          ZIP_NAME="PitchKernel-${TYPE}-munch-${DATE}.zip"
+            unzip -l "$GITHUB_WORKSPACE/$ZIP_NAME" | grep -q "kernels/${os}/Image" || \
+              { echo "ERROR: kernels/${os}/Image missing from $ZIP_NAME"; exit 1; }
 
-          cd "$WORKDIR"
-          zip -r9 "$GITHUB_WORKSPACE/$ZIP_NAME" . \
-            -x ".git/*" -x "*.gitignore" >/dev/null
+            echo "Packaged: $ZIP_NAME ($(du -sh "$GITHUB_WORKSPACE/$ZIP_NAME" | cut -f1))"
+            ZIP_NAMES+=("$ZIP_NAME")
+          done
 
-          unzip -l "$GITHUB_WORKSPACE/$ZIP_NAME" | grep -q "kernels/aosp/Image" || \
-            { echo "ERROR: kernels/aosp/Image missing from $ZIP_NAME"; exit 1; }
-          unzip -l "$GITHUB_WORKSPACE/$ZIP_NAME" | grep -q "kernels/miui/Image" || \
-            { echo "ERROR: kernels/miui/Image missing from $ZIP_NAME"; exit 1; }
+          echo "ZIP_NAME_AOSP=${ZIP_NAMES[0]}" >> $GITHUB_ENV
+          echo "ZIP_NAME_MIUI=${ZIP_NAMES[1]}" >> $GITHUB_ENV
+          # softprops/action-gh-release's `files:` input requires a NEWLINE-
+          # delimited list, not space/comma-separated (confirmed against the
+          # action's own docs) -- must use GITHUB_ENV's multiline heredoc form
+          # (EOF delimiter), a plain KEY=value line cannot hold embedded
+          # newlines.
+          {
+            echo "ZIP_NAMES_ALL<<EOF_ZIP_NAMES"
+            echo "${ZIP_NAMES[0]}"
+            echo "${ZIP_NAMES[1]}"
+            echo "EOF_ZIP_NAMES"
+          } >> $GITHUB_ENV
 
-          cd "$GITHUB_WORKSPACE"
-          echo "Packaged: $ZIP_NAME ($(du -sh $ZIP_NAME | cut -f1))"
-          echo "ZIP_NAME=${ZIP_NAME}" >> $GITHUB_ENV
-
-      - name: Upload artifact
+      - name: Upload artifact (AOSP)
         uses: actions/upload-artifact@v4
         with:
-          name: PitchKernel-munch-${{ env.ARTIFACT_LABEL }}-${{ github.run_number }}
-          path: ${{ env.ZIP_NAME }}
+          name: PitchKernel-munch-${{ env.ARTIFACT_LABEL }}-aosp-${{ github.run_number }}
+          path: ${{ env.ZIP_NAME_AOSP }}
           if-no-files-found: error
           retention-days: 7
 
-      - name: Send artifact to Telegram
+      - name: Upload artifact (MIUI)
+        uses: actions/upload-artifact@v4
+        with:
+          name: PitchKernel-munch-${{ env.ARTIFACT_LABEL }}-miui-${{ github.run_number }}
+          path: ${{ env.ZIP_NAME_MIUI }}
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Send artifacts to Telegram
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
           TELEGRAM_THREAD_ID_ARTIFACT: ${{ secrets.TELEGRAM_THREAD_ID_ARTIFACT }}
-          ZIP_PATH: ${{ github.workspace }}/${{ env.ZIP_NAME }}
-          ZIP_NAME: ${{ env.ZIP_NAME }}
           KERNEL_VERSION: "4.19"
-          # PitchKernel: reads matrix.root_solution_key directly so each
-          # matrix entry can set its own value (see matrix.include above),
-          # matching a case in telegram.sh's ROOT_DISPLAY switch, rather
-          # than reconstructing it from a single ksu_enable boolean here.
           ROOT_SOLUTION: ${{ matrix.root_solution_key }}
-          # Was hardcoded "default (apasitu)" — meant nothing and hid the exact
-          # branch/commit mismatch bug fixed in the "Clone apasitu kernel source"
-          # step above. Now reflects what was actually resolved and cloned this
-          # run, so a future branch drift shows up in the Telegram message
-          # instead of being invisible again.
           KERNEL_BRANCH: "${{ inputs.source_branch_override != '' && inputs.source_branch_override || 'main' }}@${{ env.KERNEL_SOURCE_SHA }}"
           COMPILER_STRING: "ZyCromerZ Clang 16.0.6-20260807"
           KERNEL_SRC: "apasitu"
         run: |
+          # telegram.sh reads ZIP_PATH/ZIP_NAME from env and is side-effect-free
+          # per invocation (no shared state) -- safe to source twice in one step,
+          # once per ROM's zip, each with its own ZIP_PATH/ZIP_NAME set first.
+          export ZIP_PATH="${{ github.workspace }}/${{ env.ZIP_NAME_AOSP }}"
+          export ZIP_NAME="${{ env.ZIP_NAME_AOSP }}"
+          source PitchKernel/release/telegram.sh
+
+          export ZIP_PATH="${{ github.workspace }}/${{ env.ZIP_NAME_MIUI }}"
+          export ZIP_NAME="${{ env.ZIP_NAME_MIUI }}"
           source PitchKernel/release/telegram.sh
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          # PitchKernel: tag now includes matrix.zip_type. Two matrix jobs
-          # (ReSukiSU + Vanilla) can run concurrently in the same
-          # workflow_dispatch and would otherwise both target the same
-          # "PitchKernel-munch-${DATE}" tag -- softprops/action-gh-release
-          # does not hard-fail on a shared tag (it appends to the existing
-          # release), but two jobs racing to create-or-update the same tag
-          # concurrently is exactly the class of race this repo already hit
-          # once with actions/cache (see the Restore/Save ccache comments
-          # above). Scoping the tag per variant removes the race entirely
-          # and gives each variant its own release notes describing exactly
-          # what that specific zip contains, instead of one ambiguous
-          # merged body covering both.
           tag_name: PitchKernel-munch-${{ matrix.zip_type }}-${{ env.BUILD_DATE }}
           name: "PitchKernel ${{ env.BUILD_DATE }} — munch (${{ matrix.label }})"
           body: |
@@ -1353,14 +1342,15 @@ jobs:
             ### Features
             - Root: ${{ matrix.root_provider == 'none' && 'none (vanilla, no root)' || matrix.root_provider }}
             - TCP BBR congestion control
-            - ROM auto-detection: MIUI/HyperOS or AOSP
             - CPU prime core ceiling: 2841600 kHz (hardware-enforced by qcom-cpufreq-hw driver)
 
-            ### Installation
-            Flash via OrangeFox or TWRP.
-            Select ROM type during flash (auto-detected from zip name, volume-key fallback).
+            ### Installation — two separate zips, pick the one matching your ROM
+            - **`${{ env.ZIP_NAME_AOSP }}`** — for AOSP-based custom ROMs
+            - **`${{ env.ZIP_NAME_MIUI }}`** — for MIUI / HyperOS
+
+            No in-flash ROM selection anymore — flash the zip matching your ROM directly via OrangeFox or TWRP.
             cpufreq script placed in `/data/adb/post-fs-data.d/` automatically — no separate module needed.
-          files: ${{ env.ZIP_NAME }}
+          files: ${{ env.ZIP_NAMES_ALL }}
           token: ${{ secrets.GITHUB_TOKEN }}
           draft: false
           prerelease: false
